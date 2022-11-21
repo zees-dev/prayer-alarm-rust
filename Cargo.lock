@@ -313,6 +313,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "islam"
+version = "0.1.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dea74bcb1c3b6436a6ebdfebee6ede2d6de98d37525d041569ec547a5b22047d"
+dependencies = [
+ "chrono",
+ "thiserror",
+]
+
+[[package]]
 name = "itoa"
 version = "1.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -696,8 +706,8 @@ name = "prayer-alarm"
 version = "0.0.1"
 dependencies = [
  "chrono",
+ "islam",
  "rodio",
- "salah",
  "serde",
  "serde_json",
 ]
@@ -797,15 +807,6 @@ name = "ryu"
 version = "1.0.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4501abdff3ae82a1c1b477a17252eb69cee9e66eb915c1abaa4f44d873df9f09"
-
-[[package]]
-name = "salah"
-version = "0.7.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1908dd2458b35b439d2479bd9792ff307423a0e65f66dd10fd4830eafb671309"
-dependencies = [
- "chrono",
-]
 
 [[package]]
 name = "same-file"
