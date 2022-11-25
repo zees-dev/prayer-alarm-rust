@@ -1,23 +1,38 @@
 use chrono::{Date, Local, Timelike, Utc};
+use core::panic;
 use islam::pray::{Config, Location, Prayer, PrayerTimes};
 use rodio::{Decoder, Sink};
 use std::fs::File;
 use std::io::BufReader;
 use std::ops::Sub;
+use std::sync::Arc;
 
-#[derive(Clone)]
-pub struct AdhanService<'a> {
-    pub coords: &'a (f32, f32), // latitude, longitude
-    pub config: &'a Config,
-    pub sink: &'a Sink,
+pub mod data;
+use data::Database;
+
+pub struct AdhanService {
+    coords: (f32, f32), // latitude, longitude
+    config: Config,
+    sink: Arc<Sink>,
+    // database: &'a dyn Database<PrayerTime>,
+    // database: &'a Arc<dyn Database<PrayerTime>>,
+    database: Arc<dyn Database<PrayerTime>>,
 }
 
-impl<'a> AdhanService<'a> {
-    pub fn new(coords: &'a (f32, f32), config: &'a Config, sink: &'a Sink) -> Self {
+impl AdhanService {
+    pub fn new(
+        coords: (f32, f32),
+        config: Config,
+        sink: Arc<Sink>,
+        // database: &'a dyn Database<PrayerTime>,
+        // database: &'a Arc<dyn Database<PrayerTime>>,
+        database: Arc<dyn Database<PrayerTime>>,
+    ) -> Self {
         Self {
             coords,
             config,
             sink,
+            database,
         }
     }
 
@@ -30,7 +45,7 @@ impl<'a> AdhanService<'a> {
         PrayerTimes::new(
             date,
             Location::new(self.coords.0, self.coords.1, timezone),
-            *self.config,
+            self.config,
         )
     }
 
@@ -39,11 +54,8 @@ impl<'a> AdhanService<'a> {
         println!("Today is {:#?}", today);
 
         let prayer_times = self.get_prayer_times();
-        // println!("Prayer times {:#?}", prayer_times);
-        println!("Prayer times current {:#?}", prayer_times.current());
-        println!("Prayer times for {:#?}", prayer_times.next());
-
-        println!("now time {:#?}", chrono::Local::now().time().hour());
+        let prayer_times_db = PrayerTime::new_list(&prayer_times);
+        self.database.set_all(prayer_times_db);
 
         while today == chrono::Local::today() {
             // if next prayer time is not fajr for tomorrow, then process all todays prayers
@@ -83,6 +95,19 @@ impl<'a> AdhanService<'a> {
             );
             let secs_till_prayer = (hours * 60 + mins) * 60;
             std::thread::sleep(std::time::Duration::from_secs(secs_till_prayer as u64));
+            match self.database.get(&next_prayer.name()) {
+                Some(prayer_time) => {
+                    if prayer_time.play_adhan {
+                        println!(
+                            "Playing adhan {:?} at {:?}...",
+                            next_prayer.name(),
+                            chrono::Local::now().time().format("%-l:%M %p").to_string()
+                        );
+                        self.play_adhan(&next_prayer);
+                    }
+                }
+                None => panic!("No prayer time found for {:?}", next_prayer.name()),
+            }
             println!(
                 "Playing adhan {:?} at {:?}...",
                 next_prayer.name(),
@@ -92,7 +117,7 @@ impl<'a> AdhanService<'a> {
         }
 
         // call function again to process next day (since next prayer is FajrTomorrow)
-        self.init_prayer_alarm();
+        // self.init_prayer_alarm();
     }
 
     pub fn play_adhan(&self, prayer: &Prayer) {
@@ -109,6 +134,49 @@ impl<'a> AdhanService<'a> {
             }
         }
         self.sink.sleep_until_end();
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct PrayerTime {
+    pub prayer: Prayer,
+    pub time: chrono::DateTime<Local>,
+    pub play_adhan: bool,
+}
+
+impl PrayerTime {
+    pub fn new_list(prayer_times: &PrayerTimes) -> Vec<Self> {
+        vec![
+            Prayer::Fajr,
+            Prayer::Dohr,
+            Prayer::Asr,
+            Prayer::Maghreb,
+            Prayer::Ishaa,
+        ]
+        .iter()
+        .map(|p| {
+            let time = match p {
+                Prayer::Fajr => prayer_times.fajr,
+                Prayer::Dohr => prayer_times.dohr,
+                Prayer::Asr => prayer_times.asr,
+                Prayer::Maghreb => prayer_times.maghreb,
+                Prayer::Ishaa => prayer_times.ishaa,
+                _ => panic!("Unexpected prayer"),
+            };
+            PrayerTime {
+                prayer: *p,
+                time,
+                play_adhan: true,
+            }
+        })
+        .collect()
+    }
+}
+
+impl std::fmt::Display for PrayerTime {
+    fn fmt(&self, fmt: &mut std::fmt::Formatter) -> std::fmt::Result {
+        fmt.write_str(&self.prayer.name())?;
+        Ok(())
     }
 }
 
