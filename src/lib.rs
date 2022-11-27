@@ -12,18 +12,13 @@ pub mod data;
 use data::Database;
 
 pub struct AdhanService {
-    // pub struct AdhanService {
     pub coords: (f32, f32), // latitude, longitude
     pub config: Config,
     pub receiver: crossbeam_channel::Receiver<()>,
-    // database: &'a dyn Database<PrayerTime>,
-    // database: &'a Arc<dyn Database<PrayerTime>>,
     pub database: Arc<dyn Database<PrayerTime>>,
-    // pub database: &'a T,
 }
 
 impl AdhanService {
-    // impl AdhanService {
     pub fn get_prayer_times(&self) -> PrayerTimes {
         let date: Date<Local> = chrono::Local::today();
 
@@ -105,7 +100,7 @@ impl AdhanService {
     }
 
     pub fn play_adhan(&self, prayer: &Prayer) {
-        while let Ok(_) = self.receiver.try_recv() {} // empty receiver messages
+        while let Ok(_) = self.receiver.try_recv() {} // empty currently queued receiver messages
 
         let (_stream, stream_handle) = OutputStream::try_default().unwrap();
         let sink = Arc::new(Sink::try_new(&stream_handle).unwrap());

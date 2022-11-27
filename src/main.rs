@@ -15,8 +15,6 @@ use prayer_alarm::{
 use serde_json::{json, Value};
 use std::sync::Arc;
 
-mod error;
-
 #[tokio::main]
 async fn main() {
     // TODO clap
@@ -41,7 +39,7 @@ async fn main() {
         .route("/health", get(health))
         .route("/timings", get(get_timings))
         .route("/timings/:prayer", put(put_timings_prayer))
-        .route("/halt", post(move |body: String| stop_adhan(tx)))
+        .route("/halt", post(move |_: String| stop_adhan(tx)))
         .layer(Extension(database));
 
     let addr = std::net::SocketAddr::from(([127, 0, 0, 1], 3000));
