@@ -15,7 +15,7 @@ pub struct AdhanService {
     // pub struct AdhanService {
     pub coords: (f32, f32), // latitude, longitude
     pub config: Config,
-    pub receiver: crossbeam_channel::Receiver<bool>,
+    pub receiver: crossbeam_channel::Receiver<()>,
     // database: &'a dyn Database<PrayerTime>,
     // database: &'a Arc<dyn Database<PrayerTime>>,
     pub database: Arc<dyn Database<PrayerTime>>,

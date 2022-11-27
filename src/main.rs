@@ -70,24 +70,24 @@ struct UpdatePrayerTiming {
     play_adhan: bool,
 }
 
-// `curl -X POST -H "Content-Type: application/json" --data '{"play_adhan": false}' http://localhost:3000/timings/fajr`
+// `curl -X PUT -H "Content-Type: application/json" --data '{"play_adhan": false}' http://localhost:3000/timings/fajr`
 async fn put_timings_prayer(
     Path(prayer_name): Path<String>,
     Json(payload): Json<UpdatePrayerTiming>,
     Extension(database): Extension<Arc<dyn Database<PrayerTime>>>,
 ) -> impl IntoResponse {
-    let mut prayer_time = database
-        .get(&prayer_name.to_lowercase())
-        .expect("Prayer time not found"); // update this to return a 404
-    prayer_time.play_adhan = payload.play_adhan;
-    database.set(prayer_time);
-    (StatusCode::ACCEPTED, ())
+    if let Some(mut prayer_time) = database.get(&prayer_name) {
+        prayer_time.play_adhan = payload.play_adhan;
+        database.set(prayer_time);
+        return (StatusCode::ACCEPTED, ());
+    }
+    return (StatusCode::NOT_FOUND, ());
 }
 
 // `curl -X POST http://localhost:3000/halt`
 // Note: post request takes empty payload
-async fn stop_adhan(sender: crossbeam_channel::Sender<bool>) -> impl IntoResponse {
-    sender.send(true).unwrap();
-    tracing::warn!("stopping adhan");
+async fn stop_adhan(sender: crossbeam_channel::Sender<()>) -> impl IntoResponse {
+    tracing::warn!("stopping running adhan...");
+    sender.send(()).unwrap();
     (StatusCode::ACCEPTED, ())
 }
