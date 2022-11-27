@@ -1,7 +1,8 @@
 use chrono::{Date, Local, Timelike, Utc};
 use core::panic;
 use islam::pray::{Config, Location, Prayer, PrayerTimes};
-use rodio::{Decoder, Sink};
+use rodio::{Decoder, OutputStream, Sink};
+use serde::Serialize;
 use std::fs::File;
 use std::io::BufReader;
 use std::ops::Sub;
@@ -11,31 +12,18 @@ pub mod data;
 use data::Database;
 
 pub struct AdhanService {
-    coords: (f32, f32), // latitude, longitude
-    config: Config,
-    sink: Arc<Sink>,
+    // pub struct AdhanService {
+    pub coords: (f32, f32), // latitude, longitude
+    pub config: Config,
+    pub receiver: crossbeam_channel::Receiver<bool>,
     // database: &'a dyn Database<PrayerTime>,
     // database: &'a Arc<dyn Database<PrayerTime>>,
-    database: Arc<dyn Database<PrayerTime>>,
+    pub database: Arc<dyn Database<PrayerTime>>,
+    // pub database: &'a T,
 }
 
 impl AdhanService {
-    pub fn new(
-        coords: (f32, f32),
-        config: Config,
-        sink: Arc<Sink>,
-        // database: &'a dyn Database<PrayerTime>,
-        // database: &'a Arc<dyn Database<PrayerTime>>,
-        database: Arc<dyn Database<PrayerTime>>,
-    ) -> Self {
-        Self {
-            coords,
-            config,
-            sink,
-            database,
-        }
-    }
-
+    // impl AdhanService {
     pub fn get_prayer_times(&self) -> PrayerTimes {
         let date: Date<Local> = chrono::Local::today();
 
@@ -51,7 +39,7 @@ impl AdhanService {
 
     pub fn init_prayer_alarm(&self) {
         let today = chrono::Local::today();
-        println!("Today is {:#?}", today);
+        tracing::info!("Today is {:#?}", today);
 
         let prayer_times = self.get_prayer_times();
         let prayer_times_db = PrayerTime::new_list(&prayer_times);
@@ -86,19 +74,21 @@ impl AdhanService {
                 }
             };
 
-            println!(
+            tracing::info!(
                 "Currently {:?}; time till {:?} prayer: {:?}:{:?}:00...",
                 prayer_times.current().name(),
                 next_prayer.name(),
                 hours,
                 mins,
             );
+            std::thread::sleep(std::time::Duration::from_secs(3));
+            self.play_adhan(&next_prayer);
             let secs_till_prayer = (hours * 60 + mins) * 60;
             std::thread::sleep(std::time::Duration::from_secs(secs_till_prayer as u64));
             match self.database.get(&next_prayer.name()) {
                 Some(prayer_time) => {
                     if prayer_time.play_adhan {
-                        println!(
+                        tracing::info!(
                             "Playing adhan {:?} at {:?}...",
                             next_prayer.name(),
                             chrono::Local::now().time().format("%-l:%M %p").to_string()
@@ -108,39 +98,46 @@ impl AdhanService {
                 }
                 None => panic!("No prayer time found for {:?}", next_prayer.name()),
             }
-            println!(
-                "Playing adhan {:?} at {:?}...",
-                next_prayer.name(),
-                chrono::Local::now().time().format("%-l:%M %p").to_string()
-            );
-            self.play_adhan(&next_prayer);
         }
 
         // call function again to process next day (since next prayer is FajrTomorrow)
-        // self.init_prayer_alarm();
+        self.init_prayer_alarm();
     }
 
     pub fn play_adhan(&self, prayer: &Prayer) {
+        while let Ok(_) = self.receiver.try_recv() {} // empty receiver messages
+
+        let (_stream, stream_handle) = OutputStream::try_default().unwrap();
+        let sink = Arc::new(Sink::try_new(&stream_handle).unwrap());
+
         match prayer {
             Prayer::Fajr => {
                 let file = BufReader::new(File::open("audio/sample.mp3").unwrap());
                 let source = Decoder::new(file).unwrap();
-                self.sink.append(source);
+                sink.append(source);
             }
             _ => {
                 let file = BufReader::new(File::open("audio/sample.mp3").unwrap());
                 let source = Decoder::new(file).unwrap();
-                self.sink.append(source);
+                sink.append(source);
             }
         }
-        self.sink.sleep_until_end();
+
+        let receiver = self.receiver.clone();
+        let sink_ptr = Arc::clone(&sink);
+        std::thread::spawn(move || {
+            receiver.recv().unwrap();
+            sink_ptr.stop();
+        });
+
+        sink.sleep_until_end();
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct PrayerTime {
-    pub prayer: Prayer,
-    pub time: chrono::DateTime<Local>,
+    pub prayer_name: String,
+    pub time: String,
     pub play_adhan: bool,
 }
 
@@ -164,8 +161,8 @@ impl PrayerTime {
                 _ => panic!("Unexpected prayer"),
             };
             PrayerTime {
-                prayer: *p,
-                time,
+                prayer_name: p.name().to_lowercase(),
+                time: format!("{:?}", time),
                 play_adhan: true,
             }
         })
@@ -175,7 +172,7 @@ impl PrayerTime {
 
 impl std::fmt::Display for PrayerTime {
     fn fmt(&self, fmt: &mut std::fmt::Formatter) -> std::fmt::Result {
-        fmt.write_str(&self.prayer.name())?;
+        fmt.write_str(&self.prayer_name)?;
         Ok(())
     }
 }

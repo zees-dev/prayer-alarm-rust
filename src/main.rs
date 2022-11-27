@@ -1,25 +1,93 @@
+// #![allow(unused)] // For beginning only.
+
+use axum::{
+    extract::{Json, Path},
+    http::StatusCode,
+    response::IntoResponse,
+    routing::{get, post, put},
+    Extension, Router,
+};
 use islam::pray::{Config, Madhab, Method};
-use rodio::{OutputStream, Sink};
+use prayer_alarm::{
+    data::{DataStore, Database},
+    AdhanService, PrayerTime,
+};
+use serde_json::{json, Value};
 use std::sync::Arc;
 
-fn main() {
-    let (_stream, stream_handle) = OutputStream::try_default().unwrap();
-    let sink = Arc::new(Sink::try_new(&stream_handle).unwrap());
+mod error;
 
-    // let sink_ptr = sink.clone();
-    // std::thread::spawn(move || {
-    //     std::thread::sleep(std::time::Duration::from_secs(1));
-    //     sink_ptr.stop();
-    // });
+#[tokio::main]
+async fn main() {
+    // TODO clap
 
-    // std::thread::sleep(std::time::Duration::from_secs(5));
+    tracing_subscriber::fmt::init();
 
-    // let params = prayer_alarm::structs::Params::new("Auckland", "NewZealand");
+    let (tx, rx) = crossbeam_channel::unbounded();
 
-    let service = prayer_alarm::AdhanService {
-        coords: &(-36.8501, 174.764),
-        config: &Config::new().with(Method::MuslimWorldLeague, Madhab::Hanafi),
-        sink: &sink,
+    let database: Arc<dyn Database<PrayerTime>> = Arc::new(DataStore::<PrayerTime>::new());
+    let config = Config::new().with(Method::MuslimWorldLeague, Madhab::Hanafi);
+
+    let service = AdhanService {
+        coords: (-36.8501, 174.764),
+        config,
+        database: Arc::clone(&database),
+        receiver: rx,
     };
-    service.init_prayer_alarm();
+    std::thread::spawn(move || service.init_prayer_alarm());
+
+    let app = Router::new()
+        .route("/", get(|| async { "Hello, World!" }))
+        .route("/health", get(health))
+        .route("/timings", get(get_timings))
+        .route("/timings/:prayer", put(put_timings_prayer))
+        .route("/halt", post(move |body: String| stop_adhan(tx)))
+        .layer(Extension(database));
+
+    let addr = std::net::SocketAddr::from(([127, 0, 0, 1], 3000));
+    tracing::info!("listening on {}....", addr);
+    axum::Server::bind(&addr)
+        .serve(app.into_make_service())
+        .await
+        .unwrap();
+}
+
+// `curl -X GET http://localhost:3000/health`
+async fn health() -> Json<Value> {
+    Json(json!({ "status": "up" }))
+}
+
+// `curl -X GET http://localhost:3000/timings`
+async fn get_timings(
+    Extension(database): Extension<Arc<dyn Database<PrayerTime>>>,
+) -> impl IntoResponse {
+    let prayer_times = database.get_all();
+    Json(prayer_times)
+}
+
+#[derive(serde::Deserialize)]
+struct UpdatePrayerTiming {
+    play_adhan: bool,
+}
+
+// `curl -X POST -H "Content-Type: application/json" --data '{"play_adhan": false}' http://localhost:3000/timings/fajr`
+async fn put_timings_prayer(
+    Path(prayer_name): Path<String>,
+    Json(payload): Json<UpdatePrayerTiming>,
+    Extension(database): Extension<Arc<dyn Database<PrayerTime>>>,
+) -> impl IntoResponse {
+    let mut prayer_time = database
+        .get(&prayer_name.to_lowercase())
+        .expect("Prayer time not found"); // update this to return a 404
+    prayer_time.play_adhan = payload.play_adhan;
+    database.set(prayer_time);
+    (StatusCode::ACCEPTED, ())
+}
+
+// `curl -X POST http://localhost:3000/halt`
+// Note: post request takes empty payload
+async fn stop_adhan(sender: crossbeam_channel::Sender<bool>) -> impl IntoResponse {
+    sender.send(true).unwrap();
+    tracing::warn!("stopping adhan");
+    (StatusCode::ACCEPTED, ())
 }
