@@ -32,6 +32,7 @@ async fn main() {
         database: Arc::clone(&database),
         receiver: rx,
     };
+
     std::thread::spawn(move || service.init_prayer_alarm());
 
     let app = Router::new()
@@ -73,13 +74,13 @@ async fn put_timings_prayer(
     Path(prayer_name): Path<String>,
     Json(payload): Json<UpdatePrayerTiming>,
     Extension(database): Extension<Arc<dyn Database<PrayerTime>>>,
-) -> impl IntoResponse {
-    if let Some(mut prayer_time) = database.get(&prayer_name) {
-        prayer_time.play_adhan = payload.play_adhan;
-        database.set(prayer_time);
-        return (StatusCode::ACCEPTED, ());
-    }
-    return (StatusCode::NOT_FOUND, ());
+) -> Result<impl IntoResponse, (StatusCode, String)> {
+    let mut prayer_time = database
+        .get(&prayer_name)
+        .ok_or((StatusCode::NOT_FOUND, "failed".to_owned()))?;
+    prayer_time.play_adhan = payload.play_adhan;
+    database.set(prayer_time);
+    Ok((StatusCode::ACCEPTED, "success"))
 }
 
 // `curl -X POST http://localhost:3000/halt`
