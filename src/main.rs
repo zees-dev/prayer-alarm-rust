@@ -1,19 +1,38 @@
 // #![allow(unused)] // For beginning only.
 
 use axum::{
-    extract::{Json, Path},
+    extract::{Json, Path, State},
     http::StatusCode,
     response::IntoResponse,
     routing::{get, post, put},
-    Extension, Router,
+    Router,
 };
-use islam::pray::{Config, Madhab, Method};
 use prayer_alarm::{
     data::{DataStore, Database},
-    AdhanService, PrayerTime,
+    structs::{Params, Prayer, PrayerTime},
+    AdhanService,
 };
 use serde_json::{json, Value};
 use std::sync::Arc;
+
+// // get month and/or year if any params are None
+// let (month, year) = match (self.month, self.year) {
+//     (Some(m), Some(y)) => (m, y),
+//     (Some(m), None) => (m, chrono::Local::now().year() as u16),
+//     (None, Some(y)) => (chrono::Local::now().month() as u8, y),
+//     _ => {
+//         let dt = chrono::Local::now();
+//         (dt.month() as u8, dt.year() as u16)
+//     }
+// };
+
+// // convert prayer timings (5) to 8 tunable timing query params
+// let tune_params = match self.offsets {
+//     Some((fajr, dhuhr, asr, maghrib, isha)) => {
+//         format!("0,{},0,{},{},{},0,{}", fajr, dhuhr, asr, maghrib, isha)
+//     }
+//     None => "0,0,0,0,0,0,0,0".to_string(),
+// };
 
 #[tokio::main]
 async fn main() {
@@ -23,25 +42,26 @@ async fn main() {
 
     let (tx, rx) = crossbeam_channel::unbounded();
 
-    let database: Arc<dyn Database<PrayerTime>> = Arc::new(DataStore::<PrayerTime>::new());
-    let config = Config::new().with(Method::MuslimWorldLeague, Madhab::Hanafi);
+    let database: Arc<dyn Database<PrayerTime, Key = String>> =
+        Arc::new(DataStore::<PrayerTime>::new());
+    let params = Params::new("Auckland", "NewZealand");
 
     let service = AdhanService {
-        coords: (-36.8501, 174.764),
-        config,
+        params,
         database: Arc::clone(&database),
         receiver: rx,
     };
 
+    // TODO: use tokio::spawn
     std::thread::spawn(move || service.init_prayer_alarm());
 
     let app = Router::new()
         .route("/", get(|| async { "Hello, World!" }))
         .route("/health", get(health))
         .route("/timings", get(get_timings))
-        .route("/timings/:prayer", put(put_timings_prayer))
+        .route("/timings/:date/:prayer", put(put_timings_prayer))
         .route("/halt", post(move |_: String| stop_adhan(tx)))
-        .layer(Extension(database));
+        .with_state(database);
 
     let addr = std::net::SocketAddr::from(([127, 0, 0, 1], 3000));
     tracing::info!("listening on {}....", addr);
@@ -58,7 +78,7 @@ async fn health() -> Json<Value> {
 
 // `curl -X GET http://localhost:3000/timings`
 async fn get_timings(
-    Extension(database): Extension<Arc<dyn Database<PrayerTime>>>,
+    State(database): State<Arc<dyn Database<PrayerTime, Key = String>>>,
 ) -> impl IntoResponse {
     let prayer_times = database.get_all();
     Json(prayer_times)
@@ -69,17 +89,21 @@ struct UpdatePrayerTiming {
     play_adhan: bool,
 }
 
-// `curl -X PUT -H "Content-Type: application/json" --data '{"play_adhan": false}' http://localhost:3000/timings/fajr`
+// `curl -X PUT -H "Content-Type: application/json" --data '{"play_adhan": false}' http://localhost:3000/timings/2022-12-31/fajr`
 async fn put_timings_prayer(
-    Path(prayer_name): Path<String>,
+    Path((prayer_date, prayer)): Path<(String, String)>,
+    State(database): State<Arc<dyn Database<PrayerTime, Key = String>>>,
     Json(payload): Json<UpdatePrayerTiming>,
-    Extension(database): Extension<Arc<dyn Database<PrayerTime>>>,
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
     let mut prayer_time = database
-        .get(&prayer_name)
+        .get(&prayer_date)
         .ok_or((StatusCode::NOT_FOUND, "failed".to_owned()))?;
-    prayer_time.play_adhan = payload.play_adhan;
-    database.set(prayer_time);
+
+    let prayer: Prayer = Prayer::from_str(prayer.as_str())
+        .ok_or((StatusCode::BAD_REQUEST, "invalid prayer name".to_owned()))?;
+
+    prayer_time.play_adhan.insert(prayer, payload.play_adhan);
+    database.set(&prayer_date, &prayer_time);
     Ok((StatusCode::ACCEPTED, "success"))
 }
 
