@@ -4,14 +4,15 @@ use once_cell::sync::Lazy;
 // Use Mutex for thread-safe access to a variable e.g. our DATA.
 use std::sync::Mutex;
 
-// Use HashMap for storing data as key-value pairs e.g. our DATA.
-use std::collections::HashMap;
+// Use BtreeMap for storing data as key-value pairs, sorted by key
+use std::collections::BTreeMap;
 
-pub trait Database<T>: Sync + Send {
-    fn get_all(&self) -> Vec<T>;
-    fn get(&self, key: &str) -> Option<T>;
-    fn set_all(&self, values: Vec<T>);
-    fn set(&self, value: T);
+pub trait Database<V>: Sync + Send {
+    type Key;
+    fn get_all(&self) -> Vec<V>;
+    fn get(&self, key: &Self::Key) -> Option<V>;
+    fn set_all(&self, keys: &Vec<Self::Key>, values: &Vec<V>);
+    fn set(&self, key: &Self::Key, value: &V);
 }
 
 // Create a data store as a global variable with `Lazy` and `Mutex`.
@@ -29,42 +30,48 @@ pub trait Database<T>: Sync + Send {
 // }).join().unwrap()
 // ```
 
-pub struct DataStore<T> {
-    data: Lazy<Mutex<HashMap<String, T>>>,
+pub struct DataStore<V> {
+    data: Lazy<Mutex<BTreeMap<String, V>>>,
 }
 
-impl<T> DataStore<T> {
+impl<V> DataStore<V> {
     pub fn new() -> Self {
         Self {
-            data: Lazy::new(|| Mutex::new(HashMap::new())),
+            data: Lazy::new(|| Mutex::new(BTreeMap::new())),
         }
     }
 }
 
-unsafe impl<T> Sync for DataStore<T> {}
-unsafe impl<T> Send for DataStore<T> {}
+unsafe impl<V> Sync for DataStore<V> {}
+unsafe impl<V> Send for DataStore<V> {}
 
 // Implement the Database trait for the global variable DATA.
-impl<T: std::clone::Clone + std::fmt::Display> Database<T> for DataStore<T> {
-    fn get_all(&self) -> Vec<T> {
+impl<V> Database<V> for DataStore<V>
+where
+    V: std::clone::Clone + std::fmt::Display,
+    V: std::fmt::Debug,
+{
+    type Key = String;
+
+    fn get_all(&self) -> Vec<V> {
         let data = self.data.lock().unwrap();
         data.values().cloned().collect()
     }
 
-    fn get(&self, key: &str) -> Option<T> {
+    fn get(&self, key: &Self::Key) -> Option<V> {
         let data = self.data.lock().unwrap();
         data.get(key).cloned()
     }
 
-    fn set_all(&self, value: Vec<T>) {
+    fn set_all(&self, keys: &Vec<Self::Key>, values: &Vec<V>) {
         let mut data = self.data.lock().unwrap();
-        for v in value {
-            data.insert(v.to_string(), v);
+        for (key, value) in keys.iter().zip(values.iter()) {
+            data.insert(key.to_owned(), value.to_owned());
         }
     }
 
-    fn set(&self, value: T) {
+    fn set(&self, key: &Self::Key, value: &V) {
         let mut data = self.data.lock().unwrap();
-        data.insert(value.to_string(), value);
+        data.insert(key.to_owned(), value.to_owned());
     }
 }
