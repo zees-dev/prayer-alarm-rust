@@ -1,0 +1,16 @@
+version: "3"
+services:
+  # docker run --rm -it -e PULSE_SERVER=host.docker.internal -p 3000:3000 --mount type=bind,source=${HOME}/.config/pulse,target=/home/pulseaudio/.config/pulse zeeshans/prayer-alarm-rust
+  prayer-alarm:
+    image: zeeshans/prayer-alarm-rust
+    # build:
+    #   context: .
+    #   dockerfile: Dockerfile
+    container_name: prayer-alarm
+    restart: unless-stopped
+    environment:
+      - PULSE_SERVER=host.docker.internal
+    volumes:
+      - ${HOME}/.config/pulse:/home/pulseaudio/.config/pulse
+    ports:
+      - "3000:3000"

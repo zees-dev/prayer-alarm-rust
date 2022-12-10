@@ -1,0 +1,5 @@
+*
+!src/
+!mp3/
+!Cargo.toml
+!Cargo.lock
