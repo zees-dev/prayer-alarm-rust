@@ -225,8 +225,8 @@ pub enum Prayer {
 }
 
 impl Prayer {
-    pub fn from_str(p: &str) -> Option<Self> {
-        match p.to_lowercase().as_str() {
+    pub fn from_str(p: impl Into<String>) -> Option<Self> {
+        match p.into().to_lowercase().as_str() {
             "fajr" => Some(Self::Fajr),
             "dhuhr" => Some(Self::Dhuhr),
             "asr" => Some(Self::Asr),

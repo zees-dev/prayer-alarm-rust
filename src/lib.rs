@@ -1,7 +1,6 @@
 use chrono::Datelike;
 use reqwest;
 use rodio::{Decoder, OutputStream, Sink};
-use std::fs::File;
 use std::io::BufReader;
 use std::sync::Arc;
 
@@ -10,6 +9,10 @@ use structs::{Params, Prayer, PrayerTime};
 
 pub mod data;
 use data::Database;
+
+#[derive(rust_embed::RustEmbed)]
+#[folder = "mp3/"]
+struct Assets;
 
 pub struct AdhanService<'a> {
     pub params: Params<'a>,
@@ -148,13 +151,17 @@ impl<'a> AdhanService<'a> {
 
         match prayer {
             Prayer::Fajr => {
-                let file = BufReader::new(File::open("audio/sample.mp3").unwrap());
-                let source = Decoder::new(file).unwrap();
+                let source_file = Assets::get("adhan-fajr.mp3").unwrap();
+                // Use the Cursor type from the std::io module to create a new Seekable object from the byte array
+                let cursor = std::io::Cursor::new(source_file.data.to_owned());
+                let source = Decoder::new(BufReader::new(cursor)).unwrap();
                 sink.append(source);
             }
             _ => {
-                let file = BufReader::new(File::open("audio/sample.mp3").unwrap());
-                let source = Decoder::new(file).unwrap();
+                let source_file = Assets::get("adhan-turkish.mp3").unwrap();
+                // Use the Cursor type from the std::io module to create a new Seekable object from the byte array
+                let cursor = std::io::Cursor::new(source_file.data.to_owned());
+                let source = Decoder::new(BufReader::new(cursor)).unwrap();
                 sink.append(source);
             }
         }
