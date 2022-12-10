@@ -53,6 +53,7 @@ async fn main() {
     };
 
     // TODO: use tokio::spawn
+    // tokio::task::spawn(move || service.init_prayer_alarm());
     std::thread::spawn(move || service.init_prayer_alarm());
 
     let app = Router::new()
