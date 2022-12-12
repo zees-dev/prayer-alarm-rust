@@ -4,7 +4,7 @@ use axum::{
     extract::{Json, Path, State},
     http::StatusCode,
     response::IntoResponse,
-    routing::{get, post, put},
+    routing::{get, get_service, post, put},
     Router,
 };
 use prayer_alarm::{
@@ -13,7 +13,8 @@ use prayer_alarm::{
     AdhanService,
 };
 use serde_json::{json, Value};
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
+use tower_http::{services::ServeDir, trace::TraceLayer};
 
 // // get month and/or year if any params are None
 // let (month, year) = match (self.month, self.year) {
@@ -57,9 +58,14 @@ async fn main() {
     std::thread::spawn(move || service.init_prayer_alarm());
 
     let app = Router::new()
-        .route("/", get(|| async { "Hello, World!" }))
+        .nest_service(
+            "/",
+            get_service(ServeDir::new("./client/dist")).handle_error(|_err| async {
+                (StatusCode::INTERNAL_SERVER_ERROR, "Something went wrong...")
+            }),
+        )
         .route("/health", get(health))
-        .route("/timings", get(get_timings))
+        .route("/timings", get(get_timings).post(post_timings))
         .route("/timings/:date/:prayer", put(put_timings_prayer))
         .route("/halt", post(move |_: String| stop_adhan(tx)))
         .with_state(database);
@@ -67,7 +73,7 @@ async fn main() {
     let addr = std::net::SocketAddr::from(([127, 0, 0, 1], 3000));
     tracing::info!("listening on {}....", addr);
     axum::Server::bind(&addr)
-        .serve(app.into_make_service())
+        .serve(app.layer(TraceLayer::new_for_http()).into_make_service())
         .await
         .unwrap();
 }
@@ -88,6 +94,40 @@ async fn get_timings(
 #[derive(serde::Deserialize)]
 struct UpdatePrayerTiming {
     play_adhan: bool,
+}
+
+// `curl -X POST -H "Content-Type: application/json" --data '{"play_adhan": false}' http://localhost:3000/timings`
+async fn post_timings(
+    State(database): State<Arc<dyn Database<PrayerTime, Key = String>>>,
+    Json(payload): Json<UpdatePrayerTiming>,
+) -> impl IntoResponse {
+    tracing::info!(
+        "setting all prayer times to play_adhan: {}",
+        payload.play_adhan
+    );
+
+    let modified_prayers_times: Vec<PrayerTime> = database
+        .get_all()
+        .iter()
+        .map(|prayer_time| {
+            // set all values of the play_adhan hashmap to payload
+            let play_adhan: HashMap<Prayer, bool> = prayer_time
+                .play_adhan
+                .iter()
+                .map(|(key, _)| (*key, payload.play_adhan))
+                .collect();
+            PrayerTime {
+                play_adhan,
+                ..prayer_time.clone()
+            }
+        })
+        .collect();
+    let prayer_keys = modified_prayers_times
+        .iter()
+        .map(|prayer_time| prayer_time.date.to_owned())
+        .collect::<Vec<String>>();
+    database.set_all(&prayer_keys, &modified_prayers_times);
+    Json(json!({ "status": "success" }))
 }
 
 // `curl -X PUT -H "Content-Type: application/json" --data '{"play_adhan": false}' http://localhost:3000/timings/2022-12-31/fajr`

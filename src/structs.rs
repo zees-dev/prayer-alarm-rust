@@ -215,7 +215,7 @@ impl<'a> Params<'a> {
     }
 }
 
-#[derive(Debug, Clone, serde::Serialize, Eq, PartialEq, Hash)]
+#[derive(Debug, Copy, Clone, serde::Serialize, Eq, PartialEq, Hash)]
 pub enum Prayer {
     Fajr,
     Dhuhr,
