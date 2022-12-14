@@ -15,7 +15,6 @@ use prayer_alarm::{
 use rust_embed::RustEmbed;
 use serde_json::{json, Value};
 use std::{collections::HashMap, sync::Arc};
-use tower_http::trace::TraceLayer;
 
 // // get month and/or year if any params are None
 // let (month, year) = match (self.month, self.year) {
@@ -81,10 +80,10 @@ async fn main() {
         .fallback_service(get(not_found))
         .with_state(state);
 
-    let addr = std::net::SocketAddr::from(([127, 0, 0, 1], 3000));
+    let addr = std::net::SocketAddr::from(([0, 0, 0, 0], 3000));
     tracing::info!("listening on {}....", addr);
     axum::Server::bind(&addr)
-        .serve(app.layer(TraceLayer::new_for_http()).into_make_service())
+        .serve(app.into_make_service())
         .await
         .unwrap();
 }
