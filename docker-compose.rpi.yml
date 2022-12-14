@@ -3,6 +3,7 @@ services:
   # docker run --rm -it --device /dev/snd --security-opt seccomp=unconfined -p 3000:3000 zeeshans/slim:prayer-alarm-rust
   prayer-alarm:
     image: zeeshans/slim:prayer-alarm-rust
+    pull_policy: always
     # build:
     #   context: .
     #   dockerfile: rpi.Dockerfile
