@@ -1,7 +1,13 @@
 # Build rust binary - for platform linux/arm/v7
-FROM --platform=linux/arm/v7 rust:latest AS builder
+FROM --platform=linux/arm/v7 rust:1.65.0-buster AS builder
 
-RUN apt update && apt install -y --no-install-recommends libasound2-dev && rm -rf /var/lib/apt/lists/*
+RUN apt update && \
+  apt install --no-install-recommends -y \
+  libasound2-dev \
+  && rm -rf /var/lib/apt/lists/*
+
+# install nodejs
+RUN curl -sL https://deb.nodesource.com/setup_16.x | bash - && apt install -y nodejs
 
 RUN rustup toolchain install nightly
 
@@ -10,7 +16,8 @@ RUN rustup toolchain install nightly
 ENV CARGO_NET_GIT_FETCH_WITH_CLI=true CARGO_UNSTABLE_SPARSE_REGISTRY=true
 
 WORKDIR /app
-COPY ./ ./
+COPY . .
+RUN cd client && npm install && npm run build
 RUN cargo +nightly build --release
 
 # --------------------------------------------------------------------------------------------------------------------------------
