@@ -82,6 +82,12 @@ const App: Component = () => {
           OFF
         </button>
         <button
+          class="test"
+          on:click={() => fetch('/play', { method: 'POST' })}
+        >
+          TEST
+        </button>
+        <button
           class="halt"
           on:click={() => fetch('/halt', { method: 'POST' })}
         >

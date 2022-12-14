@@ -42,6 +42,13 @@ button {
   grid-column: 3/5;
 }
 
+.test {
+  background: #f81d9d;
+  border: 1px solid grey;
+  color: #fff;
+  grid-column: 5;
+}
+
 .halt {
   background: #430808;
   border: 1px solid grey;
