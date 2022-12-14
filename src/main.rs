@@ -10,7 +10,7 @@ use axum::{
 use prayer_alarm::{
     data::{DataStore, Database},
     structs::{Params, Prayer, PrayerTime},
-    AdhanService,
+    AdhanService, Signal,
 };
 use serde_json::{json, Value};
 use std::{collections::HashMap, sync::Arc};
@@ -35,27 +35,39 @@ use tower_http::{services::ServeDir, trace::TraceLayer};
 //     None => "0,0,0,0,0,0,0,0".to_string(),
 // };
 
+#[derive(Clone)]
+struct AppState {
+    database: Arc<dyn Database<PrayerTime, Key = String>>,
+    tx: crossbeam_channel::Sender<(Signal, Prayer)>,
+}
+
 #[tokio::main]
 async fn main() {
     // TODO clap
 
     tracing_subscriber::fmt::init();
 
-    let (tx, rx) = crossbeam_channel::unbounded();
+    let (tx, rx) = crossbeam_channel::unbounded::<(Signal, Prayer)>();
 
     let database: Arc<dyn Database<PrayerTime, Key = String>> =
         Arc::new(DataStore::<PrayerTime>::new());
-    let params = Params::new("Auckland", "NewZealand");
 
+    let state = AppState {
+        database: Arc::clone(&database),
+        tx: tx.clone(),
+    };
+
+    let params = Params::new("Auckland", "NewZealand");
     let service = AdhanService {
         params,
-        database: Arc::clone(&database),
-        receiver: rx,
+        sender: tx,
+        database,
     };
 
     // TODO: use tokio::spawn
     // tokio::task::spawn(move || service.init_prayer_alarm());
     std::thread::spawn(move || service.init_prayer_alarm());
+    std::thread::spawn(move || prayer_alarm::play_adhan(&rx));
 
     let app = Router::new()
         .nest_service(
@@ -67,8 +79,9 @@ async fn main() {
         .route("/health", get(health))
         .route("/timings", get(get_timings).post(post_timings))
         .route("/timings/:date/:prayer", put(put_timings_prayer))
-        .route("/halt", post(move |_: String| stop_adhan(tx)))
-        .with_state(database);
+        .route("/play", post(play_adhan))
+        .route("/halt", post(stop_adhan))
+        .with_state(state);
 
     let addr = std::net::SocketAddr::from(([127, 0, 0, 1], 3000));
     tracing::info!("listening on {}....", addr);
@@ -84,10 +97,8 @@ async fn health() -> Json<Value> {
 }
 
 // `curl -X GET http://localhost:3000/timings`
-async fn get_timings(
-    State(database): State<Arc<dyn Database<PrayerTime, Key = String>>>,
-) -> impl IntoResponse {
-    let prayer_times = database.get_all();
+async fn get_timings(State(state): State<AppState>) -> impl IntoResponse {
+    let prayer_times = state.database.get_all();
     Json(prayer_times)
 }
 
@@ -98,7 +109,7 @@ struct UpdatePrayerTiming {
 
 // `curl -X POST -H "Content-Type: application/json" --data '{"play_adhan": false}' http://localhost:3000/timings`
 async fn post_timings(
-    State(database): State<Arc<dyn Database<PrayerTime, Key = String>>>,
+    State(state): State<AppState>,
     Json(payload): Json<UpdatePrayerTiming>,
 ) -> impl IntoResponse {
     tracing::info!(
@@ -106,7 +117,8 @@ async fn post_timings(
         payload.play_adhan
     );
 
-    let modified_prayers_times: Vec<PrayerTime> = database
+    let modified_prayers_times: Vec<PrayerTime> = state
+        .database
         .get_all()
         .iter()
         .map(|prayer_time| {
@@ -126,17 +138,20 @@ async fn post_timings(
         .iter()
         .map(|prayer_time| prayer_time.date.to_owned())
         .collect::<Vec<String>>();
-    database.set_all(&prayer_keys, &modified_prayers_times);
+    state
+        .database
+        .set_all(&prayer_keys, &modified_prayers_times);
     Json(json!({ "status": "success" }))
 }
 
 // `curl -X PUT -H "Content-Type: application/json" --data '{"play_adhan": false}' http://localhost:3000/timings/2022-12-31/fajr`
 async fn put_timings_prayer(
     Path((prayer_date, prayer)): Path<(String, String)>,
-    State(database): State<Arc<dyn Database<PrayerTime, Key = String>>>,
+    State(state): State<AppState>,
     Json(payload): Json<UpdatePrayerTiming>,
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
-    let mut prayer_time = database
+    let mut prayer_time = state
+        .database
         .get(&prayer_date)
         .ok_or((StatusCode::NOT_FOUND, "failed".to_owned()))?;
 
@@ -144,14 +159,22 @@ async fn put_timings_prayer(
         .ok_or((StatusCode::BAD_REQUEST, "invalid prayer name".to_owned()))?;
 
     prayer_time.play_adhan.insert(prayer, payload.play_adhan);
-    database.set(&prayer_date, &prayer_time);
+    state.database.set(&prayer_date, &prayer_time);
     Ok((StatusCode::ACCEPTED, "success"))
+}
+
+// `curl -X POST http://localhost:3000/play`
+// Note: post request takes empty payload
+async fn play_adhan(State(state): State<AppState>) -> impl IntoResponse {
+    tracing::warn!("playing adhan...");
+    state.tx.send((Signal::Play, Prayer::Dhuhr)).unwrap();
+    (StatusCode::ACCEPTED, ())
 }
 
 // `curl -X POST http://localhost:3000/halt`
 // Note: post request takes empty payload
-async fn stop_adhan(sender: crossbeam_channel::Sender<()>) -> impl IntoResponse {
+async fn stop_adhan(State(state): State<AppState>) -> impl IntoResponse {
     tracing::warn!("stopping running adhan...");
-    sender.send(()).unwrap();
+    state.tx.send((Signal::Stop, Prayer::Dhuhr)).unwrap();
     (StatusCode::ACCEPTED, ())
 }

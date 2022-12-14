@@ -10,13 +10,18 @@ use structs::{Params, Prayer, PrayerTime};
 pub mod data;
 use data::Database;
 
+pub enum Signal {
+    Play,
+    Stop,
+}
+
 #[derive(rust_embed::RustEmbed)]
 #[folder = "mp3/"]
 struct Assets;
 
 pub struct AdhanService<'a> {
     pub params: Params<'a>,
-    pub receiver: crossbeam_channel::Receiver<()>,
+    pub sender: crossbeam_channel::Sender<(Signal, Prayer)>,
     pub database: Arc<dyn Database<PrayerTime, Key = String>>,
 }
 
@@ -122,7 +127,9 @@ impl<'a> AdhanService<'a> {
                         .expect("error getting play adhan status")
                         .to_owned()
                     {
-                        self.play_adhan(prayer);
+                        self.sender
+                            .send((Signal::Play, prayer.to_owned()))
+                            .expect("error sending signal to adhan player");
                     }
                 }
             }
@@ -142,38 +149,57 @@ impl<'a> AdhanService<'a> {
         // sleep for duration + 5mins offset (12:05 am) - until next calendar month
         std::thread::sleep(time_diff_with_offset.to_std().unwrap());
     }
+}
 
-    pub fn play_adhan(&self, prayer: &Prayer) {
-        while let Ok(_) = self.receiver.try_recv() {} // empty currently queued receiver messages
+pub fn play_adhan(receiver: &crossbeam_channel::Receiver<(Signal, Prayer)>) {
+    while let Ok(_) = receiver.try_recv() {} // empty currently queued receiver messages
 
-        let (_stream, stream_handle) = OutputStream::try_default().unwrap();
-        let sink = Arc::new(Sink::try_new(&stream_handle).unwrap());
+    loop {
+        match receiver.recv().unwrap() {
+            (Signal::Play, prayer) => {
+                tracing::info!(
+                    "received play signal for prayer {:?}, playing adhan...",
+                    prayer
+                );
 
-        match prayer {
-            Prayer::Fajr => {
-                let source_file = Assets::get("adhan-fajr.mp3").unwrap();
-                // Use the Cursor type from the std::io module to create a new Seekable object from the byte array
+                while let Ok(_) = receiver.try_recv() {} // empty currently queued receiver messages
+
+                let (_stream, stream_handle) = OutputStream::try_default().unwrap();
+                let sink = Arc::new(Sink::try_new(&stream_handle).unwrap());
+                let source_file = match prayer {
+                    Prayer::Fajr => Assets::get("adhan-fajr.mp3").unwrap(),
+                    _ => Assets::get("adhan-turkish.mp3").unwrap(),
+                };
                 let cursor = std::io::Cursor::new(source_file.data.to_owned());
                 let source = Decoder::new(BufReader::new(cursor)).unwrap();
                 sink.append(source);
+
+                let receiver = receiver.clone();
+                let sink_ptr = Arc::clone(&sink);
+
+                std::thread::spawn(move || loop {
+                    match receiver.recv_timeout(std::time::Duration::from_secs(200)) {
+                        Ok((Signal::Stop, _)) => {
+                            tracing::info!("[thread] received stop signal for prayer {:?}...", prayer);
+                            if !sink_ptr.empty() {
+                                sink_ptr.stop();
+                            }
+                            break;
+                        }
+                        Ok((Signal::Play, _)) => tracing::info!(
+                            "[thread] received play signal for prayer while already playing adhan..."
+                        ),
+                        Err(_) => {
+                            tracing::error!("[thread] timeout exceeded, cannot stop adhan...");
+                            break;
+                        }
+                    }
+                });
+
+                sink.sleep_until_end();
             }
-            _ => {
-                let source_file = Assets::get("adhan-turkish.mp3").unwrap();
-                // Use the Cursor type from the std::io module to create a new Seekable object from the byte array
-                let cursor = std::io::Cursor::new(source_file.data.to_owned());
-                let source = Decoder::new(BufReader::new(cursor)).unwrap();
-                sink.append(source);
-            }
+            _ => (),
         }
-
-        let receiver = self.receiver.clone();
-        let sink_ptr = Arc::clone(&sink);
-        std::thread::spawn(move || {
-            receiver.recv().unwrap();
-            sink_ptr.stop();
-        });
-
-        sink.sleep_until_end();
     }
 }
 
