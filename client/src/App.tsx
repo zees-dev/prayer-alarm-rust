@@ -1,8 +1,6 @@
-import { createEffect, createResource, createSignal, createMemo, Show } from 'solid-js';
+import { createResource, createMemo, Show } from 'solid-js';
 import type { Component } from 'solid-js';
 
-const DAYS_OF_WEEK = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
-const MONTHS = ['January','February','March','April','May','June','July','August','September','October','November','December'];
 type Adhan = "Fajr" | "Dhuhr" | "Asr" | "Maghrib" | "Isha"
 interface Prayer {
   date: string              // "2022-12-29"
@@ -55,14 +53,16 @@ const togglePrayerAdhan = async (date: string, adhan: Adhan, play_adhan: boolean
 );
 
 const App: Component = () => {
-  const [month, setMonth] = createSignal<string>(MONTHS[new Date().getMonth()]);
   const [prayersResponse, { mutate, refetch }] = createResource<Prayer[]>(async () => (await fetch(`/timings`)).json());
 
   const prayers = createMemo(() => flattenPrayers(prayersResponse() ?? []));
   const nextPrayerIndex = createMemo(() => prayers().findIndex(({ datetime }) => datetime >= new Date()));
-  if (prayers().length > 0) {
-    setMonth(MONTHS[new Date(prayers()[0].date).getMonth()]);
-  }
+  const month = createMemo(() => {
+    if (prayers().length > 0) {
+      return prayers()[0].datetime.toLocaleString('en-US', { month: 'long' });
+    }
+    return new Date().toLocaleString('en-US', { month: 'long' });
+  });
 
   return (
     <main>
@@ -105,15 +105,15 @@ const App: Component = () => {
           </tr>
           {prayers().map(({ date, adhan, datetime, play_adhan }, index) => (
             <>
-              <Show when={adhan === 'Fajr'}><div style={{ display: 'flex', "font-weight": 500, color: 'deeppink' }}>{DAYS_OF_WEEK[new Date(date).getDay()]}</div></Show>
+              <Show when={adhan === 'Fajr'}><div style={{ display: 'flex', "font-weight": 500, color: 'deeppink' }}>{datetime.toLocaleString('en-US', { weekday: 'long' })}</div></Show>
               <tr
                 class:endrow={index === prayers().length - 1}
                 class:isnext={index === nextPrayerIndex()}
                 class:today={date === new Date().toISOString().split('T')[0]}
               >
-                <td>{date}</td>
+                <td>{datetime.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}</td>
                 <td>{adhan}</td>
-                <td>{datetime.toLocaleTimeString()}</td>
+                <td>{datetime.toLocaleTimeString('en-US', { hour: 'numeric', minute: 'numeric', hour12: true })}</td>
                 <td>
                   <button
                     class:on={play_adhan}
