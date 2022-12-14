@@ -3,8 +3,8 @@
 use axum::{
     extract::{Json, Path, State},
     http::StatusCode,
-    response::IntoResponse,
-    routing::{get, get_service, post, put},
+    response::{Html, IntoResponse, Response},
+    routing::{get, post, put},
     Router,
 };
 use prayer_alarm::{
@@ -12,9 +12,10 @@ use prayer_alarm::{
     structs::{Params, Prayer, PrayerTime},
     AdhanService, Signal,
 };
+use rust_embed::RustEmbed;
 use serde_json::{json, Value};
 use std::{collections::HashMap, sync::Arc};
-use tower_http::{services::ServeDir, trace::TraceLayer};
+use tower_http::trace::TraceLayer;
 
 // // get month and/or year if any params are None
 // let (month, year) = match (self.month, self.year) {
@@ -70,17 +71,14 @@ async fn main() {
     std::thread::spawn(move || prayer_alarm::play_adhan(&rx));
 
     let app = Router::new()
-        .nest_service(
-            "/",
-            get_service(ServeDir::new("./client/dist")).handle_error(|_err| async {
-                (StatusCode::INTERNAL_SERVER_ERROR, "Something went wrong...")
-            }),
-        )
+        .route("/", get(index_handler))
+        .route("/index.html", get(index_handler))
         .route("/health", get(health))
         .route("/timings", get(get_timings).post(post_timings))
         .route("/timings/:date/:prayer", put(put_timings_prayer))
         .route("/play", post(play_adhan))
         .route("/halt", post(stop_adhan))
+        .fallback_service(get(not_found))
         .with_state(state);
 
     let addr = std::net::SocketAddr::from(([127, 0, 0, 1], 3000));
@@ -89,6 +87,22 @@ async fn main() {
         .serve(app.layer(TraceLayer::new_for_http()).into_make_service())
         .await
         .unwrap();
+}
+
+#[derive(RustEmbed)]
+#[folder = "client/dist/"]
+struct Assets;
+
+// `curl -X GET http://localhost:3000/`
+async fn index_handler() -> impl IntoResponse {
+    let index = Assets::get("index.html").unwrap();
+    let body = axum::body::boxed(axum::body::Full::from(index.data));
+
+    Response::builder()
+        .status(StatusCode::OK)
+        .header("content-type", "text/html")
+        .body(body)
+        .unwrap()
 }
 
 // `curl -X GET http://localhost:3000/health`
@@ -177,4 +191,9 @@ async fn stop_adhan(State(state): State<AppState>) -> impl IntoResponse {
     tracing::warn!("stopping running adhan...");
     state.tx.send((Signal::Stop, Prayer::Dhuhr)).unwrap();
     (StatusCode::ACCEPTED, ())
+}
+
+// Finally, we use a fallback route for anything that didn't match.
+async fn not_found() -> Html<&'static str> {
+    Html("<h1>404</h1><p>Not Found</p>")
 }
