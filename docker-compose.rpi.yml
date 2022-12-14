@@ -6,7 +6,7 @@ services:
     # build:
     #   context: .
     #   dockerfile: rpi.Dockerfile
-    container_name: prayer-alarm
+    container_name: prayer-alarm-rust
     restart: unless-stopped
     devices:
       - /dev/snd
