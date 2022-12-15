@@ -32,28 +32,50 @@ button {
 .calendar-subtitle {
   display: grid;
   grid-gap: 0.5em;
-  grid-template: 1fr 1fr / repeat(6, 1fr);
+  grid-template: 1fr 1fr / repeat(12, 1fr);
   padding: 0.25em;
 }
 
 .subtitle {
   margin: 0em;
   text-align: center;
-  grid-column: 3/5;
+  grid-column: 7;
+}
+
+.onMain {
+  grid-column: 9 / 11;
+}
+
+.offMain {
+  grid-column: 11/13;
 }
 
 .test {
   background: #f81d9d;
   border: 1px solid grey;
   color: #fff;
-  grid-column: 5;
+  grid-column: 9 / 11;
+}
+
+.volDown {
+  background: white;
+  border: 1px solid grey;
+  color: black;
+  grid-column: 9 / 10;
+}
+
+.volUp {
+  background: black;
+  border: 1px solid grey;
+  color: #fff;
+  grid-column: 10 / 11;
 }
 
 .halt {
   background: #430808;
   border: 1px solid grey;
   color: #fff;
-  grid-column: 6;
+  grid-column: 11 / 13;
 }
 
 table {
