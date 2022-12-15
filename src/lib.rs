@@ -13,6 +13,8 @@ use data::Database;
 pub enum Signal {
     Play,
     Stop,
+    VolumeUp,
+    VolumeDown,
 }
 
 #[derive(rust_embed::RustEmbed)]
@@ -173,6 +175,7 @@ pub fn play_adhan(receiver: &crossbeam_channel::Receiver<(Signal, Prayer)>) {
                 let cursor = std::io::Cursor::new(source_file.data.to_owned());
                 let source = Decoder::new(BufReader::new(cursor)).unwrap();
                 sink.append(source);
+                sink.set_volume(5.0);
 
                 let receiver = receiver.clone();
                 let sink_ptr = Arc::clone(&sink);
@@ -189,6 +192,22 @@ pub fn play_adhan(receiver: &crossbeam_channel::Receiver<(Signal, Prayer)>) {
                         Ok((Signal::Play, _)) => tracing::info!(
                             "[thread] received play signal for prayer while already playing adhan..."
                         ),
+                        Ok((Signal::VolumeUp, _)) => {
+                            tracing::info!("[thread] received volume up signal...");
+                            let volume = sink_ptr.volume();
+                            if volume < 15.0 {
+                                sink_ptr.set_volume(volume + 1.0);
+                                tracing::info!("[thread] volume set to {:?}", sink_ptr.volume());
+                            }
+                        },
+                        Ok((Signal::VolumeDown, _)) => {
+                            tracing::info!("[thread] received volume down signal...");
+                            let volume = sink_ptr.volume();
+                            if sink_ptr.volume() > 0.0 {
+                                sink_ptr.set_volume(volume - 1.0);
+                                tracing::info!("[thread] volume set to {:?}", sink_ptr.volume());
+                            }
+                        },
                         Err(_) => {
                             tracing::error!("[thread] timeout exceeded, cannot stop adhan...");
                             break;

@@ -76,6 +76,8 @@ async fn main() {
         .route("/timings", get(get_timings).post(post_timings))
         .route("/timings/:date/:prayer", put(put_timings_prayer))
         .route("/play", post(play_adhan))
+        .route("/volume-up", post(volume_up))
+        .route("/volume-down", post(volume_down))
         .route("/halt", post(stop_adhan))
         .fallback_service(get(not_found))
         .with_state(state);
@@ -184,8 +186,21 @@ async fn play_adhan(State(state): State<AppState>) -> impl IntoResponse {
     (StatusCode::ACCEPTED, ())
 }
 
+// `curl -X POST http://localhost:3000/volume-up`
+async fn volume_up(State(state): State<AppState>) -> impl IntoResponse {
+    tracing::warn!("increasing volume...");
+    state.tx.send((Signal::VolumeUp, Prayer::Dhuhr)).unwrap();
+    (StatusCode::ACCEPTED, ())
+}
+
+// `curl -X POST http://localhost:3000/volume-down`
+async fn volume_down(State(state): State<AppState>) -> impl IntoResponse {
+    tracing::warn!("decreasing volume...");
+    state.tx.send((Signal::VolumeDown, Prayer::Dhuhr)).unwrap();
+    (StatusCode::ACCEPTED, ())
+}
+
 // `curl -X POST http://localhost:3000/halt`
-// Note: post request takes empty payload
 async fn stop_adhan(State(state): State<AppState>) -> impl IntoResponse {
     tracing::warn!("stopping running adhan...");
     state.tx.send((Signal::Stop, Prayer::Dhuhr)).unwrap();

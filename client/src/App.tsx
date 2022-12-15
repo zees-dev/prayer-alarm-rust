@@ -70,13 +70,13 @@ const App: Component = () => {
       <div class="calendar-subtitle">
         <h3 class="subtitle">{month()}</h3>
         <button
-          class="on"
+          classList={{ on: true, onMain: true }}
           on:click={async () => { await setAllPrayerAdhans(true); await refetch(); }}
         >
           ON
         </button>
         <button
-          class="off"
+          classList={{ off: true, offMain: true }}
           on:click={async () => { await setAllPrayerAdhans(false); await refetch(); }}
         >
           OFF
@@ -92,6 +92,18 @@ const App: Component = () => {
           on:click={() => fetch('/halt', { method: 'POST' })}
         >
           HALT
+        </button>
+        <button
+          class="volDown"
+          on:click={() => fetch('/volume-down', { method: 'POST' })}
+        >
+          Vol -
+        </button>
+        <button
+          class="volUp"
+          on:click={() => fetch('/volume-up', { method: 'POST' })}
+        >
+          Vol +
         </button>
       </div>
       {prayersResponse.loading && <div>Loading...</div>}
