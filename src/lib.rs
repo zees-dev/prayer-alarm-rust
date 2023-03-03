@@ -10,6 +10,7 @@ use structs::{Params, Prayer, PrayerTime};
 pub mod data;
 use data::Database;
 
+#[derive(Debug)]
 pub enum Signal {
     Play,
     Stop,
@@ -28,7 +29,7 @@ pub struct AdhanService<'a> {
 }
 
 impl<'a> AdhanService<'a> {
-    // TODO: use this, return custom errors (api call & response deserialization/parsing)
+    // TODO: return custom errors (api call & response deserialization/parsing)
     fn get_prayer_timings(&self) -> Result<Vec<PrayerTime>, String> {
         let api_url = self.params.to_prayer_timings_url();
 

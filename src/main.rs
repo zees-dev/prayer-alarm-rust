@@ -79,6 +79,7 @@ async fn main() {
         .route("/volume-up", post(volume_up))
         .route("/volume-down", post(volume_down))
         .route("/halt", post(stop_adhan))
+        .route("/reset", post(reset_adhan_timings))
         .fallback_service(get(not_found))
         .with_state(state);
 
@@ -205,6 +206,13 @@ async fn stop_adhan(State(state): State<AppState>) -> impl IntoResponse {
     tracing::warn!("stopping running adhan...");
     state.tx.send((Signal::Stop, Prayer::Dhuhr)).unwrap();
     (StatusCode::ACCEPTED, ())
+}
+
+// `curl -X POST http://localhost:3000/reset`
+// Note: post request takes empty payload
+async fn reset_adhan_timings() -> impl IntoResponse {
+    tracing::warn!("resetting adhan timings; killing process...");
+    std::process::exit(1);
 }
 
 // Finally, we use a fallback route for anything that didn't match.
