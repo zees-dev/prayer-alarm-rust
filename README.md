@@ -38,5 +38,9 @@ docker push zeeshans/slim:prayer-alarm-rust
 **Use image on RPI:**
 
 ```sh
+docker pull zeeshans/slim:prayer-alarm-rust
+```
+
+```sh
 docker-compose up -d
 ```
