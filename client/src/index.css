@@ -78,6 +78,13 @@ button {
   grid-column: 11 / 13;
 }
 
+.reset {
+  background: red;
+  border: 1px solid grey;
+  color: #fff;
+  grid-column: 11 / 13;
+}
+
 table {
   border: 2px solid;
   border-radius: 0.5em;

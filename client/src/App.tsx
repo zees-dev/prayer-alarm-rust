@@ -105,6 +105,12 @@ const App: Component = () => {
         >
           Vol +
         </button>
+        <button
+          class="reset"
+          on:click={() => fetch('/reset', { method: 'POST' })}
+        >
+          RESET
+        </button>
       </div>
       {prayersResponse.loading && <div>Loading...</div>}
       {prayers() && (
