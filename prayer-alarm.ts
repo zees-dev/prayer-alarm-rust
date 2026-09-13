@@ -12,6 +12,8 @@ type Saved = {
   version: 1;
   fingerprint: string;
   volume: number;
+  offsets: number[];
+  offsetChangedAt: number[];
   months: Record<string, Calendar>;
   overrides: Record<string, boolean>;
   consumed: Record<string, string>;
@@ -313,6 +315,19 @@ function validateSaved(raw: unknown, c: Config): Saved {
       "State version or location settings changed; preserve state.json and use a new DATA_DIR",
     );
   integer(s.volume, 0, 15, "Saved volume");
+  if (s.offsets === undefined) s.offsets = [...c.offsets];
+  if (!Array.isArray(s.offsets) || s.offsets.length !== PRAYERS.length)
+    throw new Error("Invalid saved offsets");
+  s.offsets.forEach((value) => integer(value, -180, 180, "Saved offset"));
+  if (s.offsetChangedAt === undefined) s.offsetChangedAt = PRAYERS.map(() => 0);
+  if (
+    !Array.isArray(s.offsetChangedAt) ||
+    s.offsetChangedAt.length !== PRAYERS.length
+  )
+    throw new Error("Invalid saved offset change times");
+  s.offsetChangedAt.forEach((value) =>
+    integer(value, 0, Number.MAX_SAFE_INTEGER, "Saved offset change time"),
+  );
   const months = object(s.months),
     overrides = object(s.overrides),
     consumed = object(s.consumed);
@@ -645,6 +660,8 @@ export async function createApp(
           version: 1,
           fingerprint: fingerprint(c),
           volume: 5,
+          offsets: [...c.offsets],
+          offsetChangedAt: PRAYERS.map(() => 0),
           months: {},
           overrides: {},
           consumed: {},
@@ -749,17 +766,37 @@ export async function createApp(
     inflight.set(month, task);
     return task;
   }
-  function events() {
+  function timing(p: Occurrence, date: string, state: Saved) {
+    const index = PRAYERS.indexOf(p.prayer),
+      due = Date.parse(p.iso) + (state.offsets[index]! - c.offsets[index]!) * 60000,
+      id = date + "/" + p.prayer;
+    return {
+      prayer: p.prayer,
+      iso: new Date(due).toISOString(),
+      date,
+      id,
+      enabled: state.overrides[id] ?? true,
+    };
+  }
+  function display(p: ReturnType<typeof timing>) {
+    const due = Date.parse(p.iso);
+    return {
+      ...p,
+      time: wallTime(due, c.timezone),
+      scheduledDate: localDate(due, c.timezone),
+    };
+  }
+  const offsetSettings = (state: Saved) =>
+    Object.fromEntries(PRAYERS.map((p, i) => [p, state.offsets[i]!])) as Record<
+      Prayer,
+      number
+    >;
+  function events(state = saved) {
     const month = current();
     return [monthShift(month, -1), month, monthShift(month, 1)]
       .flatMap((key) =>
-        (saved.months[key]?.days || []).flatMap((day) =>
-          day.prayers.map((p) => ({
-            ...p,
-            date: day.date,
-            id: `${day.date}/${p.prayer}`,
-            enabled: saved.overrides[`${day.date}/${p.prayer}`] ?? true,
-          })),
+        (state.months[key]?.days || []).flatMap((day) =>
+          day.prayers.map((p) => timing(p, day.date, state)),
         ),
       )
       .sort(
@@ -789,7 +826,8 @@ export async function createApp(
   function snapshot(month = current()) {
     monthKey(month);
     const future = events().filter((p) => Date.parse(p.iso) > now());
-    const calendar = saved.months[month];
+    const calendar = saved.months[month],
+      nextAdhan = future.find((p) => p.enabled && !saved.consumed[p.id]);
     return {
       serverTime: now(),
       timezone: c.timezone,
@@ -798,16 +836,13 @@ export async function createApp(
       today: localDate(now(), c.timezone),
       month,
       volume: saved.volume,
+      offsets: offsetSettings(saved),
       days: (calendar?.days || []).map((day) => ({
         ...day,
-        prayers: day.prayers.map((p) => ({
-          ...p,
-          id: `${day.date}/${p.prayer}`,
-          enabled: saved.overrides[`${day.date}/${p.prayer}`] ?? true,
-        })),
+        prayers: day.prayers.map((p) => display(timing(p, day.date, saved))),
       })),
-      nextPrayer: future[0] || null,
-      nextAdhan: future.find((p) => p.enabled) || null,
+      nextPrayer: future[0] ? display(future[0]) : null,
+      nextAdhan: nextAdhan ? display(nextAdhan) : null,
       playback: { ...player.status },
       automatic: automatic(),
       calendar: calendar
@@ -826,7 +861,7 @@ export async function createApp(
     }
     const month = current();
     await Promise.allSettled(
-      [month, monthShift(month, 1)].map((m) =>
+      [month, monthShift(month, 1), monthShift(month, -1)].map((m) =>
         refresh(m, errors.has(m) && (retry.get(m)?.at || 0) <= now()),
       ),
     );
@@ -843,24 +878,27 @@ export async function createApp(
     if (!pending.length) return;
     const chosen = await transact((draft) => {
       let selected: (typeof pending)[number] | undefined;
-      for (const p of pending) {
-        if (draft.consumed[p.id]) continue;
+      for (const p of events(draft)) {
+        if (draft.consumed[p.id] || Date.parse(p.iso) > moment) continue;
         const due = Date.parse(p.iso),
-          enabled = draft.overrides[p.id] ?? true;
+          enabled = draft.overrides[p.id] ?? true,
+          cutoff = draft.offsetChangedAt[PRAYERS.indexOf(p.prayer)]!;
         const disposition =
-          due < startup
-            ? "startup-skipped"
-            : !enabled
-              ? "disabled"
-              : !c.autoPlay
-                ? "paused"
-                : !clock
-                  ? "clock-unsynchronized"
-                  : jump || moment - due > 60000
-                    ? "missed"
-                    : selected
-                      ? "collision"
-                      : "claimed";
+          cutoff > 0 && due <= cutoff
+            ? "offset-skipped"
+            : due < startup
+              ? "startup-skipped"
+              : !enabled
+                ? "disabled"
+                : !c.autoPlay
+                  ? "paused"
+                  : !clock
+                    ? "clock-unsynchronized"
+                    : jump || moment - due > 60000
+                      ? "missed"
+                      : selected
+                        ? "collision"
+                        : "claimed";
         draft.consumed[p.id] = disposition;
         if (disposition === "claimed") selected = p;
       }
@@ -1026,6 +1064,45 @@ export async function createApp(
         });
         await player.volume(value);
         return Response.json({ volume: value }, { headers });
+      }
+      if (route === "/offsets" && req.method === "POST") {
+        const values = data.offsets;
+        if (
+          !values || typeof values !== "object" || Array.isArray(values) ||
+          Object.keys(data).length !== 1 || Object.keys(values).length !== PRAYERS.length ||
+          !PRAYERS.every((p) => Object.hasOwn(values, p))
+        )
+          throw new HttpError(
+            400,
+            "offsets must contain exactly Fajr, Dhuhr, Asr, Maghrib and Isha",
+          );
+        const offsets = PRAYERS.map((p) =>
+          integer((values as Record<string, unknown>)[p], -180, 180, p),
+        );
+        const result = await transact((draft) => {
+          const previous = draft.offsets;
+          draft.offsets = offsets;
+          const moment = now();
+          // Calendars fetched after this edit must not catch up past prayers either.
+          for (let index = 0; index < PRAYERS.length; index++)
+            if (previous[index] !== offsets[index])
+              draft.offsetChangedAt[index] = moment;
+          // An edit cannot turn elapsed occurrences into catch-up playback.
+          for (const calendar of Object.values(draft.months))
+            for (const day of calendar.days)
+              for (const p of day.prayers) {
+                const index = PRAYERS.indexOf(p.prayer),
+                  adjusted = timing(p, day.date, draft);
+                if (
+                  previous[index] !== offsets[index] &&
+                  Date.parse(adjusted.iso) <= moment &&
+                  !draft.consumed[adjusted.id]
+                )
+                  draft.consumed[adjusted.id] = "offset-skipped";
+              }
+          return offsetSettings(draft);
+        });
+        return Response.json({ offsets: result }, { headers });
       }
       const selected = monthKey(
         typeof data.month === "string" ? data.month : month,
@@ -1303,6 +1380,33 @@ const HTML = `<!doctype html>
         margin: 8px 4px 3px;
         line-height: 1.4;
       }
+      dialog {
+        width: min(420px, calc(100% - 24px));
+        max-height: calc(100dvh - 24px);
+        overflow: auto;
+        padding: 20px;
+        border: 1px solid #d4dff3;
+        border-radius: 12px;
+        color: #152443;
+      }
+      dialog::backdrop { background: #15244370; }
+      dialog p { font-size: .85rem; line-height: 1.4; }
+      .offset-field {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) 44px 72px 44px;
+        align-items: center;
+        gap: 6px;
+        margin: 8px 0;
+      }
+      .offset-field input {
+        width: 100%;
+        min-height: 44px;
+        text-align: center;
+        border: 1px solid #cdd8ee;
+        border-radius: 8px;
+      }
+      .offset-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 16px; }
+      .day-shift { display: block; font-size: .65rem; font-weight: 400; text-align: right; }
       .calendar {
         display: grid;
         gap: 10px;
@@ -1572,6 +1676,7 @@ const HTML = `<!doctype html>
         <details class="more">
           <summary>More</summary>
           <div class="more-menu">
+            <button id="open-offsets">Prayer offsets</button>
             <button id="refresh">Refresh times</button><button id="reset">Reset month</button>
             <p>Reset enables this month and refreshes its times. Elapsed prayers never replay.</p>
           </div>
@@ -1580,6 +1685,19 @@ const HTML = `<!doctype html>
       <section id="calendar" class="calendar" aria-label="Prayer times"></section>
       <p id="cache" class="cache"></p>
     </main>
+    <dialog id="offset-dialog" aria-labelledby="offset-title">
+      <form id="offset-form">
+        <h2 id="offset-title">Prayer offsets</h2>
+        <p>Minutes, applied to every month. Negative is earlier; positive is later.</p>
+        <div id="offset-fields"></div>
+        <p id="offset-error" class="error" role="alert"></p>
+        <div class="offset-actions">
+          <button id="offset-reset" type="button">Reset offsets</button>
+          <button id="offset-close" type="button">Close</button>
+          <button id="offset-save" class="primary" type="submit">Save</button>
+        </div>
+      </form>
+    </dialog>
     <footer class="dock" id="dock" aria-label="Speaker controls">
       <div class="dock-inner">
         <div class="volume">
@@ -1650,7 +1768,8 @@ const HTML = `<!doctype html>
       }
       function describe(p) {
         if (!p) return "No upcoming prayer available";
-        return p.prayer + " · " + p.time + (p.date === state.today ? "" : " · " + p.date);
+        return p.prayer + " · " + p.time +
+          (p.scheduledDate === state.today && p.scheduledDate === p.date ? "" : " · " + p.scheduledDate);
       }
       async function load() {
         const request = ++sequence;
@@ -1676,7 +1795,7 @@ const HTML = `<!doctype html>
         text("next-prayer", describe(state.nextPrayer));
         text(
           "next-adhan",
-          state.nextPrayer && !state.nextPrayer.enabled
+          state.nextPrayer && state.nextPrayer.id !== state.nextAdhan?.id
             ? "Next adhan: " + describe(state.nextAdhan)
             : "",
         );
@@ -1752,6 +1871,7 @@ const HTML = `<!doctype html>
                 day.date +
                 " at " +
                 p.time +
+                (p.scheduledDate !== day.date ? " on " + p.scheduledDate : "") +
                 (elapsed ? ", elapsed" : ", upcoming"),
             );
             row.classList.toggle("elapsed", elapsed);
@@ -1760,6 +1880,12 @@ const HTML = `<!doctype html>
             const time = row.querySelector("time");
             time.dateTime = p.iso;
             time.textContent = p.time;
+            if (p.scheduledDate !== day.date) {
+              const shift = document.createElement("small");
+              shift.className = "day-shift";
+              shift.textContent = p.scheduledDate > day.date ? "Next day" : "Previous day";
+              time.append(shift);
+            }
             row.setAttribute("aria-pressed", String(p.enabled));
             row.querySelector(".switch").textContent = p.enabled ? "On" : "Off";
             row.title = elapsed
@@ -1868,6 +1994,76 @@ const HTML = `<!doctype html>
           text("pending", busy ? "Working…" : "");
         }
       }
+      let offsetsPending = false;
+      const offsetPrayers = ["Fajr", "Dhuhr", "Asr", "Maghrib", "Isha"];
+      for (const prayer of offsetPrayers) {
+        const field = document.createElement("div");
+        field.className = "offset-field";
+        const label = document.createElement("label");
+        label.htmlFor = "offset-" + prayer;
+        label.textContent = prayer;
+        const input = document.createElement("input");
+        input.id = label.htmlFor;
+        input.type = "number";
+        input.min = -180;
+        input.max = 180;
+        input.step = 1;
+        input.required = true;
+        const buttons = [-1, 1].map((delta) => {
+          const button = document.createElement("button");
+          button.type = "button";
+          button.textContent = delta < 0 ? "−" : "+";
+          button.setAttribute("aria-label", (delta < 0 ? "Decrease " : "Increase ") + prayer + " offset");
+          button.onclick = () => delta < 0 ? input.stepDown() : input.stepUp();
+          return button;
+        });
+        field.append(label, buttons[0], input, buttons[1]);
+        $("offset-fields").append(field);
+      }
+      const fillOffsets = (values) => {
+        for (const prayer of offsetPrayers) $("offset-" + prayer).value = values[prayer];
+      };
+      $("open-offsets").onclick = () => {
+        if (!state) return;
+        fillOffsets(state.offsets);
+        text("offset-error", "");
+        document.querySelector(".more").open = false;
+        $("offset-dialog").showModal();
+      };
+      $("offset-close").onclick = () => $("offset-dialog").close();
+      $("offset-dialog").onclose = () => document.querySelector(".more summary").focus();
+      $("offset-dialog").oncancel = (e) => { if (offsetsPending) e.preventDefault(); };
+      async function saveOffsets(reset = false) {
+        if (offsetsPending) return;
+        const offsets = Object.fromEntries(offsetPrayers.map((p) =>
+          [p, reset ? 0 : Number($("offset-" + p).value)]));
+        offsetsPending = true;
+        busy++;
+        text("offset-error", "");
+        const controls = $("offset-form").querySelectorAll("input, button");
+        controls.forEach((control) => control.disabled = true);
+        try {
+          const response = await fetch("/offsets", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ offsets }),
+          });
+          const result = await response.json();
+          if (!response.ok) throw Error(result.error);
+          fillOffsets(result.offsets);
+          await load();
+          if (connectionError) throw Error(connectionError);
+          if (!reset) $("offset-dialog").close();
+        } catch (error) {
+          text("offset-error", error.message);
+        } finally {
+          offsetsPending = false;
+          busy--;
+          controls.forEach((control) => control.disabled = false);
+        }
+      }
+      $("offset-form").onsubmit = (e) => { e.preventDefault(); saveOffsets(); };
+      $("offset-reset").onclick = () => saveOffsets(true);
       $("previous").onclick = () => {
         month = shift(month, -1);
         load();

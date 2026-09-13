@@ -1,9 +1,11 @@
-import { test, expect } from "bun:test";
+import { test, expect, spyOn } from "bun:test";
+import * as fs from "node:fs/promises";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 const bunExecutable = Bun.which("bun") || process.execPath;
 import {
+  PRAYERS,
   readConfig,
   monthShift,
   calendarURL,
@@ -604,4 +606,283 @@ for await(const chunk of Bun.stdin.stream()) {
     await player.halt();
     await rm(dir, { recursive: true, force: true });
   }
+});
+
+const offsetBody = (values: Partial<Record<(typeof PRAYERS)[number], number>> = {}) => ({
+  offsets: Object.fromEntries(PRAYERS.map((p) => [p, values[p] ?? 0])),
+});
+
+test("offset API requires exactly five bounded signed integers and the same origin", async () => {
+  const s = await setup();
+  try {
+    const original = s.app.snapshot();
+    for (const value of [null, [], {}, { Fajr: 1 }, { ...offsetBody().offsets, Sunrise: 0 },
+      ...["1", null, 1.5, -181, 181].map((Fajr) => ({ ...offsetBody().offsets, Fajr }))])
+      expect((await s.request("/offsets", { offsets: value })).status).toBe(400);
+    expect((await s.request("/offsets", { ...offsetBody(), other: true })).status).toBe(400);
+    expect((await s.app.handle(new Request("http://localhost:3000/offsets", {
+      method: "POST", headers: { "content-type": "application/json", origin: "http://evil.example" },
+      body: JSON.stringify(offsetBody({ Fajr: 3 })),
+    }))).status).toBe(403);
+    expect(s.app.snapshot().offsets).toEqual(original.offsets);
+    expect(s.app.snapshot().days).toEqual(original.days);
+    expect((await s.request("/offsets", offsetBody({ Fajr: -180, Isha: 180 }))).status).toBe(200);
+  } finally { await s.cleanup(); }
+});
+
+test("legacy state migrates baseline offsets without changing caches, switches, volume or consumed events", async () => {
+  const s = await setup();
+  try {
+    await s.request("/volume", { volume: 3 });
+    await s.request("/timings/2026-09-13/Fajr", { play_adhan: false }, "PUT");
+    await s.app.tick();
+    await s.app.close();
+    const path = join(s.c.dataDir, "state.json"), legacy = await Bun.file(path).json();
+    const c = { ...s.c, offsets: [-7, 5, 0, 1, -2] };
+    legacy.fingerprint = JSON.stringify([c.city, c.country, c.method, c.school, c.timezone, c.offsets]);
+    delete legacy.offsets;
+    await Bun.write(path, JSON.stringify(legacy));
+    let calls = 0;
+    const options = { ...s.options, fetch: async () => { calls++; throw Error("offline"); } };
+    const app = await createApp(c, options);
+    try {
+      const state = app.snapshot();
+      expect(state.offsets).toEqual(offsetBody({ Fajr: -7, Dhuhr: 5, Maghrib: 1, Isha: -2 }).offsets);
+      expect(state.days[12]!.prayers[0]!.time).toBe("05:00");
+      const migrated = await Bun.file(path).json();
+      for (const key of ["months", "overrides", "consumed", "volume"])
+        expect(migrated[key]).toEqual(legacy[key]);
+      const result = await app.handle(new Request("http://localhost:3000/offsets", {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify(offsetBody({ Fajr: -10, Dhuhr: 10 })),
+      }));
+      expect(result.status).toBe(200);
+      expect(app.snapshot().days[12]!.prayers[0]!.time).toBe("04:57");
+      expect(app.snapshot().days[12]!.prayers[1]!.time).toBe("12:05");
+      expect(app.snapshot().days[12]!.prayers[0]!.enabled).toBe(false);
+      expect(calls).toBe(0);
+      expect((await Bun.file(path).json()).months).toEqual(legacy.months);
+    } finally { await app.close(); }
+    s.time(Date.parse("2026-10-01T00:00:00+13:00"));
+    const restarted = await createApp(c, options);
+    try {
+      expect(restarted.snapshot().month).toBe("2026-10");
+      expect(restarted.snapshot().offsets.Fajr).toBe(-10);
+      expect(restarted.snapshot().days[0]!.prayers[0]!.time).toBe("04:57");
+      expect(calls).toBe(0);
+    } finally { await restarted.close(); }
+    const valid = await Bun.file(path).json();
+    for (const offsets of [[1, 2], [0, 0, 0, 0, 181], [0, 0, 0, 0, 0.5], null]) {
+      await Bun.write(path, JSON.stringify({ ...valid, offsets }));
+      await expect(createApp(c, options)).rejects.toThrow("Cannot open state safely");
+    }
+  } finally { await s.cleanup(); }
+});
+
+test("display and scheduler use the same shifted instant; month reset retains offsets and consumed events never replay", async () => {
+  const s = await setup();
+  try {
+    await s.request("/offsets", offsetBody({ Fajr: 2, Dhuhr: -3 }));
+    const shifted = s.app.snapshot().days[12]!.prayers[0]!;
+    expect(shifted.time).toBe("05:02");
+    expect(shifted.iso).toBe("2026-09-12T17:02:00.000Z");
+    expect(s.app.snapshot().nextPrayer).toEqual(shifted);
+    s.time(Date.parse("2026-09-12T17:00:00Z"));
+    await s.app.tick();
+    expect(s.player.plays).toEqual([]);
+    s.time(Date.parse(shifted.iso) - 1000);
+    await s.app.tick();
+    s.time(Date.parse(shifted.iso));
+    await Promise.all([s.app.tick(), s.app.tick()]);
+    expect(s.player.plays).toEqual(["Fajr"]);
+    expect(s.app.snapshot().consumed[shifted.id]).toBe("claimed");
+    await s.request("/reset", { month: "2026-09" });
+    expect(s.app.snapshot().offsets.Fajr).toBe(2);
+    await s.request("/offsets", offsetBody({ Fajr: 3 }));
+    expect(s.app.snapshot().nextPrayer?.id).toBe(shifted.id);
+    expect(s.app.snapshot().nextAdhan?.prayer).toBe("Dhuhr");
+    s.time(Date.parse(shifted.iso) + 60000);
+    await s.app.tick();
+    expect(s.player.plays).toEqual(["Fajr"]);
+    await s.request("/offsets", offsetBody());
+    expect(s.app.snapshot().offsets).toEqual(offsetBody().offsets);
+    expect(s.app.snapshot().days[12]!.prayers[0]!.time).toBe("05:00");
+    expect(s.app.snapshot().consumed[shifted.id]).toBe("claimed");
+  } finally { await s.cleanup(); }
+});
+
+test("moving an unconsumed prayer into the past skips it and a failed write preserves both offsets and times", async () => {
+  const s = await setup();
+  try {
+    await s.request("/offsets", offsetBody({ Fajr: -1 }));
+    expect(s.app.snapshot().consumed["2026-09-13/Fajr"]).toBe("offset-skipped");
+    await s.app.tick();
+    expect(s.player.plays).toEqual([]);
+    await s.request("/offsets", offsetBody({ Fajr: 1 }));
+    s.time(Date.parse("2026-09-12T17:00:59Z"));
+    await s.app.tick();
+    s.time(Date.parse("2026-09-12T17:01:00Z"));
+    await s.app.tick();
+    expect(s.player.plays).toEqual([]);
+    const before = s.app.snapshot(), path = join(s.c.dataDir, "state.json");
+    await rm(path);
+    await fs.mkdir(path);
+    expect((await s.request("/offsets", offsetBody({ Fajr: -3, Asr: 9 }))).status).toBe(503);
+    expect(s.app.snapshot().offsets).toEqual(before.offsets);
+    expect(s.app.snapshot().days).toEqual(before.days);
+    expect(s.app.snapshot().consumed).toEqual(before.consumed);
+    expect((await s.request("/halt")).status).toBe(200);
+  } finally { await s.cleanup(); }
+});
+
+test("a tick queued during an offset write recalculates due times from the committed settings", async () => {
+  const s = await setup();
+  const originalOpen = fs.open;
+  let release!: () => void, entered!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const opened = new Promise<void>((resolve) => { entered = resolve; });
+  const spy = spyOn(fs, "open").mockImplementation(async (...args) => {
+    entered();
+    await gate;
+    return originalOpen(...args);
+  });
+  try {
+    const saving = s.request("/offsets", offsetBody({ Fajr: 10 }));
+    await opened;
+    s.time(Date.parse("2026-09-12T17:00:00Z"));
+    const ticking = s.app.tick();
+    release();
+    expect((await saving).status).toBe(200);
+    await ticking;
+    expect(s.player.plays).toEqual([]);
+    expect(s.app.snapshot().consumed["2026-09-13/Fajr"]).toBeUndefined();
+    expect(s.app.snapshot().days[12]!.prayers[0]!.time).toBe("05:10");
+  } finally {
+    release();
+    spy.mockRestore();
+    await s.cleanup();
+  }
+});
+
+test("shifted instants cross DST and month boundaries in the configured timezone, retaining source IDs", async () => {
+  const s = await setup(Date.parse("2026-09-01T00:00:00+12:00"));
+  try {
+    await s.app.close();
+    const app = await createApp(s.c, {
+      ...s.options,
+      fetch: async (input) => {
+        const response = await s.options.fetch(input), raw = await response.json();
+        for (const day of raw.data) {
+          day.timings.Fajr = day.timings.Fajr.replace("T05:00:", "T01:30:");
+          day.timings.Isha = day.timings.Isha.replace("T20:00:", "T23:30:");
+          // Auckland's spring transition occurs at 02:00, so 01:30 still has +12.
+          if (day.date.gregorian.date === "27-09-2026")
+            day.timings.Fajr = day.timings.Fajr.replace("+13:00", "+12:00");
+        }
+        return Response.json(raw);
+      },
+    });
+    try {
+      await app.refresh("2026-09", true);
+      await app.refresh("2026-08", true);
+      await app.maintain();
+      const request = (values: Partial<Record<(typeof PRAYERS)[number], number>>) =>
+        app.handle(new Request("http://localhost:3000/offsets", {
+          method: "POST", headers: { "content-type": "application/json" },
+          body: JSON.stringify(offsetBody(values)),
+        }));
+      await request({ Fajr: 120, Isha: 60 });
+      expect(app.snapshot().nextPrayer).toMatchObject({
+        id: "2026-08-31/Isha", date: "2026-08-31", scheduledDate: "2026-09-01", time: "00:30",
+      });
+      expect(app.snapshot().days[26]!.prayers[0]).toMatchObject({
+        time: "04:30", scheduledDate: "2026-09-27", iso: "2026-09-26T15:30:00.000Z",
+      });
+      s.time(Date.parse("2026-09-01T00:29:59+12:00"));
+      await app.tick();
+      s.time(Date.parse("2026-09-01T00:30:00+12:00"));
+      await app.tick();
+      expect(s.player.plays).toEqual(["Isha"]);
+      expect(app.snapshot().consumed["2026-08-31/Isha"]).toBe("claimed");
+      await request({ Fajr: -120 });
+      expect(app.snapshot().days[0]!.prayers[0]).toMatchObject({
+        id: "2026-09-01/Fajr", date: "2026-09-01", scheduledDate: "2026-08-31", time: "23:30",
+      });
+    } finally { await app.close(); }
+  } finally { await s.cleanup(); }
+});
+
+
+test("an offset moved to exactly now is skipped; initial nonzero settings seed a new state", async () => {
+  const s = await setup();
+  try {
+    s.time(Date.parse("2026-09-12T17:01:00Z"));
+    await s.request("/offsets", offsetBody({ Fajr: 1 }));
+    await s.app.tick();
+    expect(s.app.snapshot().consumed["2026-09-13/Fajr"]).toBe("offset-skipped");
+    expect(s.player.plays).toEqual([]);
+    await s.app.close();
+    await rm(join(s.c.dataDir, "state.json"));
+    const c = { ...s.c, offsets: [4, -5, 6, -7, 8] },
+      app = await createApp(c, s.options);
+    try {
+      expect(app.snapshot().offsets).toEqual(offsetBody({ Fajr: 4, Dhuhr: -5, Asr: 6, Maghrib: -7, Isha: 8 }).offsets);
+      expect((await Bun.file(join(c.dataDir, "state.json")).json()).offsets).toEqual(c.offsets);
+    } finally { await app.close(); }
+  } finally { await s.cleanup(); }
+});
+
+test("offset edits suppress newly fetched past prayers and persist cutoffs without suppressing future prayers", async () => {
+  const s = await setup(Date.parse("2026-09-13T04:58:59+12:00"));
+  try {
+    await s.app.close();
+    const path = join(s.c.dataDir, "state.json"), legacy = await Bun.file(path).json();
+    legacy.months = {};
+    delete legacy.offsetChangedAt;
+    await Bun.write(path, JSON.stringify(legacy));
+    let offline = true;
+    const app = await createApp(s.c, {
+      ...s.options,
+      fetch: async (input) => {
+        if (offline) throw Error("offline");
+        return s.options.fetch(input);
+      },
+    });
+    try {
+      expect((await Bun.file(path).json()).offsetChangedAt).toEqual([0, 0, 0, 0, 0]);
+      await app.maintain();
+      expect(app.snapshot().days).toEqual([]);
+      const changedAt = Date.parse("2026-09-13T04:59:30+12:00");
+      s.time(changedAt);
+      const save = () => app.handle(new Request("http://localhost:3000/offsets", {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify(offsetBody({ Fajr: -1 })),
+      }));
+      expect((await save()).status).toBe(200);
+      expect((await Bun.file(path).json()).offsetChangedAt).toEqual([changedAt, 0, 0, 0, 0]);
+      s.time(changedAt + 1000);
+      expect((await save()).status).toBe(200);
+      expect((await Bun.file(path).json()).offsetChangedAt[0]).toBe(changedAt);
+      offline = false;
+      await app.refresh("2026-09", true);
+      await app.tick();
+      expect(app.snapshot().consumed["2026-09-13/Fajr"]).toBe("offset-skipped");
+      expect(s.player.plays).toEqual([]);
+    } finally { await app.close(); }
+    const restarted = await createApp(s.c, s.options);
+    try {
+      await restarted.maintain();
+      s.time(Date.parse("2026-09-14T04:58:59+12:00"));
+      await restarted.tick();
+      s.time(Date.parse("2026-09-14T04:59:00+12:00"));
+      await restarted.tick();
+      expect(s.player.plays).toEqual(["Fajr"]);
+    } finally { await restarted.close(); }
+    const valid = await Bun.file(path).json();
+    for (const offsetChangedAt of [null, [], [0, 0, 0, 0, -1], [0, 0, 0, 0, 0.5],
+      [0, 0, 0, 0, "0"], [0, 0, 0, 0, Number.MAX_SAFE_INTEGER + 1]]) {
+      await Bun.write(path, JSON.stringify({ ...valid, offsetChangedAt }));
+      await expect(createApp(s.c, s.options)).rejects.toThrow("Cannot open state safely");
+    }
+  } finally { await s.cleanup(); }
 });

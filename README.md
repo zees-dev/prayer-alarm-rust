@@ -54,6 +54,7 @@ Port 3000 is the default because the former k3s Service uses 7867. Removing that
 - Change global speaker gain while idle or playing. The 0–15 scale is linear gain, with the original default of 5. It is not a percentage.
 - Use the play/pause icon to start, pause, or resume the recording at its current position. The stop icon ends it without disabling later prayers.
 - Refresh times while keeping switches, or Reset month to refresh and enable its switches.
+- Open More → Prayer offsets to set signed minute adjustments for Fajr, Dhuhr, Asr, Maghrib, and Isha. Negative is earlier; positive is later. Save applies all five to displayed times and scheduled audio in every month. Reset offsets restores all five to zero; Reset month keeps them.
 
 Manual play does not consume a scheduled occurrence. An automatic prayer takes priority over a manual test, including a paused recording. Another fresh Play while audio is busy returns an error; the page uses Resume when paused. Audio never overlaps.
 
@@ -63,11 +64,11 @@ A compact sticky header keeps the next prayer visible, with the timezone beside 
 
 ## State and scheduling
 
-Switches, gain, validated calendar caches, and consumed occurrences are saved atomically in `data/state.json`. This directory is ignored by Git. A lock prevents two processes from sharing the same state directory. Preserve this data when updating the code.
+Switches, gain, prayer offsets, validated calendar caches, and consumed occurrences are saved atomically in `data/state.json`. This directory is ignored by Git. A lock prevents two processes from sharing the same state directory. Preserve this data when updating the code.
 
-The current and following month are fetched from AlAdhan over HTTPS. A cached calendar remains usable for its own dates if the API is unavailable. There is no replacement calculation engine and no reuse of last month's times. Current-calendar absence, clock synchronization, audio errors, and failed saves are visible in the UI.
+The previous, current, and following months are fetched from AlAdhan over HTTPS. A cached calendar remains usable for its own dates if the API is unavailable. There is no replacement calculation engine and no reuse of last month's times. Current-calendar absence, clock synchronization, audio errors, and failed saves are visible in the UI.
 
-The scheduler checks once per second. It allows up to 60 seconds of delay while running. Startup does not replay past prayers; long clock jumps or stalls skip late occurrences. Reset and refresh do not replay consumed events.
+The scheduler checks once per second. It allows up to 60 seconds of delay while running. Startup does not replay past prayers; long clock jumps or stalls skip late occurrences. Reset and refresh do not replay consumed events. Offset changes never replay consumed occurrences or catch up a changed prayer moved to the present or past, including when its calendar arrives after the edit. Per-prayer change times persist with the settings so this also holds after a restart. Rows retain their original calendar day and switch, with a next-day or previous-day label when an adjustment crosses midnight. The next-prayer header shows its actual scheduled date.
 
 Automatic events are recorded before playback to avoid duplicates after a crash. A crash between that write and actual playback can miss an event. A corrupt state file or changed location configuration fails closed: preserve the existing file and choose a new `DATA_DIR` deliberately rather than silently enabling all alarms.
 
@@ -84,7 +85,7 @@ Set environment variables before running Bun. There is no separate configuration
 | `METHOD` | `3` | Muslim World League |
 | `SCHOOL` | `0` | Standard school |
 | `TZ` | `Pacific/Auckland` | Calendar and display timezone |
-| `OFFSETS` | `0,0,0,0,0` | Signed minutes for Fajr,Dhuhr,Asr,Maghrib,Isha; each -180 to 180 |
+| `OFFSETS` | `0,0,0,0,0` | Initial signed minutes for Fajr,Dhuhr,Asr,Maghrib,Isha; each -180 to 180 |
 | `HOST` | `0.0.0.0` | Listener address |
 | `PORT` | `3000` | Listener port |
 | `DATA_DIR` | `data/` beside the TS file | Persistent state and ownership lock |
@@ -93,6 +94,8 @@ Set environment variables before running Bun. There is no separate configuration
 | `AUDIO_DRIVER` | `alsa` on Linux, `coreaudio` on macOS | mpg123 output driver |
 | `AUDIO_DEVICE` | `plughw:CARD=Headphones,DEV=0` on Linux | ALSA output; empty on macOS |
 | `ALLOWED_HOSTS` | Local hostname, interface IPs, localhost | Additional comma-separated hostnames, without ports |
+
+Prayer offsets are saved globally and survive restarts and month changes. `OFFSETS` seeds a new state file or an older file without saved offsets; saved settings then take precedence. Existing AlAdhan caches already include that startup baseline, so the local adjustment is `saved offset − startup offset`. For example, a cached +5-minute baseline changed to +8 needs only another 3 minutes. Editing offsets needs no network request. Keep the startup `OFFSETS` value unchanged when reusing a state directory, because it remains part of cache validation.
 
 This is a LAN control page with no account system. Requests validate Host and Origin; do not expose it directly to the public internet. Additional hostnames must be configured explicitly.
 
@@ -134,10 +137,13 @@ Mutations accept JSON objects. Legacy control routes also accept empty bodies.
 | `POST /play` | `{"prayer":"Fajr"}`; empty defaults to Dhuhr |
 | `POST /pause` | `{"paused":true}` to pause, `{"paused":false}` to resume the current recording |
 | `POST /halt` | Empty |
+| `POST /offsets` | `{"offsets":{"Fajr":0,"Dhuhr":0,"Asr":0,"Maghrib":0,"Isha":0}}`; exactly five integers, each -180 to 180 |
 | `POST /volume` | `{"volume":2}` |
 | `POST /volume-up`, `/volume-down` | Empty |
 | `POST /refresh` | `{"month":"2026-09"}` |
 | `POST /reset` | `{"month":"2026-09"}` |
+
+`GET /state` includes the effective offsets keyed by prayer; `POST /offsets` returns the saved offsets after the durable write.
 
 Month defaults to the current configured-zone month. Reset now refreshes and enables that month instead of terminating the process.
 
