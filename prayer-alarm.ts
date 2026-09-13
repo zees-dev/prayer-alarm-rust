@@ -397,6 +397,12 @@ export function createPlayer(c: Config): Player {
       s.waiters.add(w);
     });
   }
+  function command(s: Session, text: string, match: (line: string) => boolean) {
+    // Listen before writing so an immediate acknowledgement cannot be missed.
+    const acknowledged = wait(s, match);
+    send(s, text);
+    return acknowledged;
+  }
   function fail(s: Session, error: string) {
     if (s.stopped) return;
     for (const w of [...s.waiters]) w.reject(new Error(error));
@@ -541,23 +547,17 @@ export function createPlayer(c: Config): Player {
       await ready;
       if (ticket !== generation) return;
       send(s, "SILENCE");
-      const rvaAck = wait(s, (line) => line === "@RVA off");
-      send(s, "RVA off");
-      await rvaAck;
+      await command(s, "RVA off", (line) => line === "@RVA off");
       if (ticket !== generation) return;
-      const volumeAck = wait(s, (line) => line.startsWith("@V "));
       const startupGain = desiredGain;
-      send(s, `VOLUME ${startupGain * 100}`);
-      await volumeAck;
+      await command(s, `VOLUME ${startupGain * 100}`, (line) => line.startsWith("@V "));
       if (ticket !== generation) return;
-      const started = wait(s, (line) => line === "@P 2");
       const file = join(
         import.meta.dir,
         "mp3",
         prayer === "Fajr" ? "adhan-fajr.mp3" : "adhan-turkish.mp3",
       );
-      send(s, `LOAD ${file}`);
-      await started;
+      await command(s, `LOAD ${file}`, (line) => line === "@P 2");
       if (ticket === generation && !s.stopped && desiredGain !== startupGain)
         await volume(desiredGain);
       if (ticket === generation && !s.stopped)
@@ -587,12 +587,11 @@ export function createPlayer(c: Config): Player {
       }
       if (owned.paused === paused) return;
       try {
-        const acknowledged = wait(
+        await command(
           owned,
+          "PAUSE",
           (line) => line === (paused ? "@P 1" : "@P 2"),
         );
-        send(owned, "PAUSE");
-        await acknowledged;
         if (session === owned && ticket === generation && !owned.stopped)
           player.status = {
             ...player.status,
@@ -615,9 +614,7 @@ export function createPlayer(c: Config): Player {
     const s = session;
     if (!s || s.stopped || !s.playing) return;
     try {
-      const ack = wait(s, (line) => line.startsWith("@V "));
-      send(s, `VOLUME ${value * 100}`);
-      await ack;
+      await command(s, `VOLUME ${value * 100}`, (line) => line.startsWith("@V "));
     } catch (e) {
       fail(s, message(e));
       throw new HttpError(503, message(e));
@@ -1306,11 +1303,6 @@ const HTML = `<!doctype html>
         margin: 8px 4px 3px;
         line-height: 1.4;
       }
-      .hint {
-        font-size: 0.73rem;
-        color: #60718f;
-        margin: 8px 0;
-      }
       .calendar {
         display: grid;
         gap: 10px;
@@ -1486,7 +1478,6 @@ const HTML = `<!doctype html>
         height: 22px;
         fill: currentColor;
       }
-      .status,
       .pending {
         font-size: 0.7rem;
         color: #566b8e;
