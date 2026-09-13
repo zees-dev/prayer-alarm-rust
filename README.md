@@ -58,7 +58,7 @@ Port 3000 is the default because the former k3s Service uses 7867. Removing that
 
 Manual play does not consume a scheduled occurrence. An automatic prayer takes priority over a manual test, including a paused recording. Another fresh Play while audio is busy returns an error; the page uses Resume when paused. Audio never overlaps.
 
-The page uses the configured location's timezone, even when the visiting phone is in another timezone. The next prayer and next enabled adhan are shown separately.
+The page displays 12-hour times with AM/PM in the configured location's timezone, even when the visiting phone is in another timezone. The next prayer and next enabled adhan are shown separately.
 
 A compact sticky header keeps the next prayer visible, with the timezone beside the countdown. On mobile, volume, the recording selector, and play/pause and stop icons stay in a bottom dock. The calendar reserves space for these controls so they do not cover the final row.
 

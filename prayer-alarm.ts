@@ -976,6 +976,10 @@ export async function createApp(
       const route = url.pathname,
         month = monthKey(url.searchParams.get("month") || current());
       if (req.method === "GET") {
+        if (route === "/favicon.svg")
+          return new Response(FAVICON, {
+            headers: { ...headers, "content-type": "image/svg+xml" },
+          });
         if (route === "/" || route === "/index.html")
           return new Response(HTML, {
             headers: {
@@ -1162,12 +1166,20 @@ export async function createApp(
   return { handle, tick, maintain, close, snapshot, refresh };
 }
 
+const FAVICON = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <rect width="64" height="64" rx="14" fill="#2458ed"/>
+  <circle cx="28" cy="34" r="20" fill="#fff"/>
+  <circle cx="36" cy="27" r="19" fill="#2458ed"/>
+  <path d="M48 9l2 5 5 2-5 2-2 5-2-5-5-2 5-2z" fill="#ffd269"/>
+</svg>`;
+
 const HTML = `<!doctype html>
 <html lang="en">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
     <meta name="theme-color" content="#2458ed" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <title>Prayer calendar</title>
     <style>
       :root {
@@ -1766,9 +1778,14 @@ const HTML = `<!doctype html>
         const [y, m] = value.split("-").map(Number);
         return new Date(Date.UTC(y, m - 1 + delta, 1)).toISOString().slice(0, 7);
       }
+      function clockTime(value) {
+        const [hours, minutes] = value.split(":");
+        const hour = Number(hours);
+        return (hour % 12 || 12) + ":" + minutes + (hour < 12 ? " AM" : " PM");
+      }
       function describe(p) {
         if (!p) return "No upcoming prayer available";
-        return p.prayer + " · " + p.time +
+        return p.prayer + " · " + clockTime(p.time) +
           (p.scheduledDate === state.today && p.scheduledDate === p.date ? "" : " · " + p.scheduledDate);
       }
       async function load() {
@@ -1812,7 +1829,8 @@ const HTML = `<!doctype html>
                 " " +
                 new Date(state.calendar.fetchedAt).toLocaleString("en-NZ", {
                   timeZone: state.timezone,
-                }) +
+                  hour12: true,
+                }).toUpperCase() +
                 " · " +
                 state.timezone
             : "Calendar unavailable. Refresh to retry.",
@@ -1870,7 +1888,7 @@ const HTML = `<!doctype html>
                 " on " +
                 day.date +
                 " at " +
-                p.time +
+                clockTime(p.time) +
                 (p.scheduledDate !== day.date ? " on " + p.scheduledDate : "") +
                 (elapsed ? ", elapsed" : ", upcoming"),
             );
@@ -1879,7 +1897,7 @@ const HTML = `<!doctype html>
             row.classList.toggle("next-row", state.nextPrayer?.id === p.id);
             const time = row.querySelector("time");
             time.dateTime = p.iso;
-            time.textContent = p.time;
+            time.textContent = clockTime(p.time);
             if (p.scheduledDate !== day.date) {
               const shift = document.createElement("small");
               shift.className = "day-shift";
